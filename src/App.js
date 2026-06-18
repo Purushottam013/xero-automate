@@ -16,6 +16,7 @@ import React, { useState, useEffect, useRef } from 'react';
 
 const RAW_API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
 const API_BASE_URL = RAW_API_BASE_URL.replace(/\/+$/, '');
+const IS_NGROK_API = /ngrok-free\.app$/i.test(API_BASE_URL);
 
 function apiUrl(path) {
   if (/^https?:\/\//i.test(path)) return path;
@@ -23,7 +24,11 @@ function apiUrl(path) {
 }
 
 function apiFetch(path, options) {
-  return fetch(apiUrl(path), options);
+  const headers = new Headers(options?.headers || {});
+  if (IS_NGROK_API) {
+    headers.set('ngrok-skip-browser-warning', '1');
+  }
+  return fetch(apiUrl(path), { ...options, headers });
 }
 
 // ─── Design Tokens ────────────────────────────────────────────────────────────
