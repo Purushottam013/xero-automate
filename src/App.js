@@ -31,6 +31,26 @@ function apiFetch(path, options) {
   return fetch(apiUrl(path), { ...options, headers });
 }
 
+function extractErrorMessage(error) {
+  if (!error) return '';
+  if (typeof error === 'string') return error;
+  return error.message || error.error || '';
+}
+
+function getUserFacingErrorMessage(error, fallback = 'Something took a little longer than expected. Please try again in a moment.') {
+  const rawMessage = extractErrorMessage(error);
+  const message = String(rawMessage || '').trim();
+
+  if (/status code 429|too many requests|rate limit/i.test(message)) {
+    return 'Things are a little busy right now. Please wait a moment and try again.';
+  }
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return 'We could not reach the service just now. Please check the connection and try again.';
+  }
+  if (!message) return fallback;
+  return message;
+}
+
 // ─── Design Tokens ────────────────────────────────────────────────────────────
 const S = {
   page: { minHeight: '100vh', background: 'linear-gradient(135deg, #f0f4ff 0%, #faf5ff 100%)', fontFamily: "'Inter', sans-serif" },
@@ -134,7 +154,7 @@ export default function App() {
       window.history.replaceState({}, '', '/');
       loadTenants();
     } else if (params.get('xero_error')) {
-      setError('Xero error: ' + params.get('xero_error'));
+      setError(getUserFacingErrorMessage('Xero error: ' + params.get('xero_error')));
       window.history.replaceState({}, '', '/');
     } else {
       loadTenants();
@@ -168,7 +188,7 @@ export default function App() {
       const r = await apiFetch('/auth/xero');
       const { url } = await r.json();
       window.location.href = url;
-    } catch (e) { setError(e.message); setLoading(false); }
+    } catch (e) { setError(getUserFacingErrorMessage(e)); setLoading(false); }
   }
 
   async function disconnect() {
@@ -293,7 +313,7 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
   const [stage, setStage]           = useState(cachedProfile ? 'already_learned' : 'permission');
   const [progressStep, setProgressStep] = useState(0);
   const [error, setError]           = useState('');
-  const [months, setMonths]         = useState(6); // 3 | 6 | 12
+  const [months, setMonths]         = useState(6); // 3 | 6 | 9
 
   const progressSteps = [
     'Connecting to Xero…',
@@ -317,13 +337,13 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
       });
       const data = await r.json();
       clearInterval(stepTimer);
-      if (!r.ok) throw new Error(data.error);
+      if (!r.ok) throw new Error(getUserFacingErrorMessage(data?.error));
       setProgressStep(progressSteps.length - 1);
       await new Promise(res => setTimeout(res, 600));
       onLearned(data.profile, data.bankAccounts || [], Date.now());
     } catch (e) {
       clearInterval(stepTimer);
-      setError(e.message);
+      setError(getUserFacingErrorMessage(e));
       setStage('already_learned');
       setProgressStep(0);
     }
@@ -333,7 +353,7 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
   const MonthPicker = () => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
       <span style={{ fontSize: 12, color: '#6b7280', fontWeight: 500 }}>Look back:</span>
-      {[3, 6, 12].map(m => (
+      {[3, 6, 9].map(m => (
         <button key={m}
           onClick={() => setMonths(m)}
           style={{
@@ -616,8 +636,8 @@ function SetupStep({ tenant, profile, learnedAt, onSession, onRelearn }) {
       });
       const data = await r.json();
       clearInterval(timer);
-      if (!r.ok) throw new Error(data.error);
-      if (!data.checklist?.length) throw new Error('AI returned 0 steps. Please try again.');
+      if (!r.ok) throw new Error(getUserFacingErrorMessage(data?.error));
+      if (!data.checklist?.length) throw new Error(getUserFacingErrorMessage('AI returned 0 steps. Please try again.'));
       const normalised = data.checklist.map((c, i) => ({ ...c, id: c.id || `step_${i + 1}` }));
       const toggles = {};
       normalised.forEach(c => { toggles[c.id] = true; });
@@ -627,7 +647,7 @@ function SetupStep({ tenant, profile, learnedAt, onSession, onRelearn }) {
       setLoadingStep(genSteps.length - 1);
       await new Promise(r => setTimeout(r, 300));
       setStage('configure');
-    } catch (e) { clearInterval(timer); setError(e.message); }
+    } catch (e) { clearInterval(timer); setError(getUserFacingErrorMessage(e)); }
     setLoading(false);
   }
 
@@ -885,12 +905,12 @@ function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transa
     try {
       const r = await apiFetch(`/close/session/${sessionId}/upload-csv`, { method: 'POST', body: fd });
       const data = await r.json();
-      if (!r.ok) throw new Error(data.error);
+      if (!r.ok) throw new Error(getUserFacingErrorMessage(data?.error));
       setTransactions(prev => {
         const others = prev.filter(t => t.bank_account_id && t.bank_account_id !== bankAccountId);
         return [...others, ...data.transactions];
       });
-    } catch (e) { setUploadError(e.message); }
+    } catch (e) { setUploadError(getUserFacingErrorMessage(e)); }
     setUploadingByBank(prev => ({ ...prev, [bankAccountId]: false }));
   }
 
@@ -911,7 +931,7 @@ function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transa
       body: JSON.stringify({ action })
     });
     const data = await r.json();
-    if (!r.ok) throw new Error(data.error);
+    if (!r.ok) throw new Error(getUserFacingErrorMessage(data?.error));
     // Update local state: remove duplicate flag and set status
     setTransactions(prev => prev.map(t => {
       if (t.id !== txnId) return t;
@@ -1307,7 +1327,7 @@ function CreateBillPanel({ tenantId, accounts, closeMonth, closeYear }) {
       if (!r.ok) throw new Error(d.error);
       setPosted(prev => [...prev, { supplier, amount, date, id: d.invoiceId }]);
       setSupplier(''); setAmount(''); setRef(''); setDesc('');
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(getUserFacingErrorMessage(e)); }
     setSub(false);
   }
 
@@ -1382,7 +1402,7 @@ function PayablesPanel({ tenantId, month, year }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       setBills(d);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(getUserFacingErrorMessage(e)); }
     setLoading(false);
   }
 
@@ -1468,7 +1488,7 @@ function ReceivablesPanel({ tenantId, month, year }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       setInvoices(d);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(getUserFacingErrorMessage(e)); }
     setLoading(false);
   }
 
@@ -1583,7 +1603,7 @@ function JournalEntryPanel({ tenantId, accounts, closeMonth, closeYear }) {
         { accountCode: '', description: '', debit: '', credit: '' },
         { accountCode: '', description: '', debit: '', credit: '' },
       ]);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(getUserFacingErrorMessage(e)); }
     setSubmitting(false);
   }
 
@@ -1707,7 +1727,7 @@ function ReportsPanel({ tenantId, month, year, plOnly = false, bsOnly = false })
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       setPl(d);
-    } catch (e) { setEPl(e.message); }
+    } catch (e) { setEPl(getUserFacingErrorMessage(e)); }
     setLPl(false);
   }
 
@@ -1718,7 +1738,7 @@ function ReportsPanel({ tenantId, month, year, plOnly = false, bsOnly = false })
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       setBs(d);
-    } catch (e) { setEBs(e.message); }
+    } catch (e) { setEBs(getUserFacingErrorMessage(e)); }
     setLBs(false);
   }
 
@@ -1789,7 +1809,7 @@ function DuplicateResolutionPanel({ duplicates, onResolve, compact = false }) {
       await onResolve(txnId, action);
       setResolved(prev => ({ ...prev, [txnId]: action }));
     } catch (e) {
-      setErrors(prev => ({ ...prev, [txnId]: e.message }));
+      setErrors(prev => ({ ...prev, [txnId]: getUserFacingErrorMessage(e) }));
     }
     setLoading(prev => ({ ...prev, [txnId]: null }));
   }
@@ -1946,7 +1966,7 @@ function RecurringBillsPanel({ tenantId, closeMonth, closeYear }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       setBills(d);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(getUserFacingErrorMessage(e)); }
     setLoading(false);
   }
 
@@ -1962,7 +1982,7 @@ function RecurringBillsPanel({ tenantId, closeMonth, closeYear }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       setPushed(p => ({ ...p, [id]: true }));
-    } catch (e) { setPushErrors(p => ({ ...p, [id]: e.message })); }
+    } catch (e) { setPushErrors(p => ({ ...p, [id]: getUserFacingErrorMessage(e) })); }
     setPushing(p => ({ ...p, [id]: false }));
   }
 
@@ -2033,7 +2053,7 @@ function ApproveBillsPanel({ tenantId }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       setBills(d);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(getUserFacingErrorMessage(e)); }
     setLoading(false);
   }
 
@@ -2045,7 +2065,7 @@ function ApproveBillsPanel({ tenantId }) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error);
       setApproved(p => ({ ...p, [invoiceId]: true }));
-    } catch (e) { setApproveErrors(p => ({ ...p, [invoiceId]: e.message })); }
+    } catch (e) { setApproveErrors(p => ({ ...p, [invoiceId]: getUserFacingErrorMessage(e) })); }
     setApproving(p => ({ ...p, [invoiceId]: false }));
   }
 
@@ -2147,7 +2167,7 @@ function DepreciationPanel({ tenantId, accounts, item, closeMonth, closeYear }) 
       if (!r.ok) throw new Error(d.error);
       setPosted(prev => [...prev, { date, lines }]);
       setLines(defaultLines);
-    } catch (e) { setError(e.message); }
+    } catch (e) { setError(getUserFacingErrorMessage(e)); }
     setSubmitting(false);
   }
 
@@ -2403,7 +2423,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
       }
       onPushed(txn.id);
       return true;
-    } catch (e) { setErr(e.message); return false; }
+    } catch (e) { setErr(getUserFacingErrorMessage(e)); return false; }
   }
 
   // Expose pushBill via ref for parent "Push All" orchestration
@@ -2608,7 +2628,7 @@ function IncomingTxnARMatch({ txns, tenantId, month, year }) {
           return next;
         });
       })
-      .catch(e => setLoadErr(e.message))
+      .catch(e => setLoadErr(getUserFacingErrorMessage(e)))
       .finally(() => setLoading(false));
   }, [tenantId, month, year]);
 
@@ -2632,7 +2652,7 @@ function IncomingTxnARMatch({ txns, tenantId, month, year }) {
       }}));
       setMatched(prev => ({ ...prev, [txnId]: true }));
     } catch (e) {
-      setMatchErr(prev => ({ ...prev, [txnId]: e.message }));
+      setMatchErr(prev => ({ ...prev, [txnId]: getUserFacingErrorMessage(e) }));
     }
     setMatchingId(null);
   }
@@ -2746,7 +2766,7 @@ function BookAnalysisPanel({ tenantId, sessionId, closeMonth, closeYear, onGoBac
       if (!r.ok) throw new Error(d.error);
       setResult(d);
       onResultChange?.(d.analysis);
-    } catch (e) { setErr(e.message); }
+    } catch (e) { setErr(getUserFacingErrorMessage(e)); }
     setLoading(false);
   }
 
@@ -3235,8 +3255,8 @@ function TxnRow({ txn, expanded, accounts, onToggle, onUpdate, onAttach, onRemov
     setAttachUploading(true); setAttachError('');
     try {
       const data = await onAttach(file);
-      if (data?.error) throw new Error(data.error);
-    } catch (e) { setAttachError(e.message); }
+      if (data?.error) throw new Error(getUserFacingErrorMessage(data?.error));
+    } catch (e) { setAttachError(getUserFacingErrorMessage(e)); }
     setAttachUploading(false);
   }
 
@@ -3375,11 +3395,11 @@ function PushStep({ session, transactions, bankAccounts, initialBankId, onDone }
       });
       const data = await r.json();
       clearInterval(interval);
-      if (!r.ok) throw new Error(data.error);
+      if (!r.ok) throw new Error(getUserFacingErrorMessage(data?.error));
       setPushProgress(100);
       await new Promise(r => setTimeout(r, 400));
       setResults(data);
-    } catch (e) { clearInterval(interval); setError(e.message); }
+    } catch (e) { clearInterval(interval); setError(getUserFacingErrorMessage(e)); }
     setPushing(false);
   }
 
