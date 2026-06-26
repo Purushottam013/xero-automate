@@ -129,9 +129,45 @@ function ProgressBar({ pct, animated = false, height = 8 }) {
   );
 }
 
+function TenantSwitcher({ tenants, tenantId, onChange, disabled = false }) {
+  const activeTenant = tenants.find(t => t.tenant_id === tenantId);
+  const tenantCount = tenants.length;
+
+  return (
+    <div className="tenant-switcher">
+      <div className="tenant-switcher-copy">
+        {/* <div className="tenant-switcher-eyebrow">Connected Xero org</div> */}
+        <div className="tenant-switcher-title">
+          {tenantCount > 1 ? 'Switch organisation' : (activeTenant?.tenant_name || 'Select organisation')}
+        </div>
+        <div className="tenant-switcher-meta">
+          
+        </div>
+      </div>
+      <div className="tenant-switcher-select-wrap">
+        <select
+          value={tenantId || ''}
+          onChange={onChange}
+          disabled={disabled}
+          className="tenant-switcher-select"
+          aria-label="Select connected Xero organisation"
+        >
+          {tenants.map(t => (
+            <option key={t.tenant_id} value={t.tenant_id}>
+              {t.tenant_name}
+            </option>
+          ))}
+        </select>
+        <span className="tenant-switcher-chevron" aria-hidden="true">▾</span>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [step, setStep]               = useState(0);
+  const [tenants, setTenants]         = useState([]);
   const [tenant, setTenant]           = useState(null);
   const [profile, setProfile]         = useState(null);
   const [bankAccounts, setBankAccounts] = useState([]);
@@ -147,6 +183,7 @@ export default function App() {
   const [error, setError]             = useState('');
   const [loading, setLoading]         = useState(false);
   const [learnedAt, setLearnedAt]     = useState(null);
+  const [switchingTenant, setSwitchingTenant] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -161,25 +198,55 @@ export default function App() {
     }
   }, []);
 
+  async function loadTenantContext(nextTenant) {
+    setSwitchingTenant(true);
+    setTenant(nextTenant);
+    setProfile(null);
+    setBankAccounts([]);
+    setLearnedAt(null);
+    setSession(null);
+    setChecklist([]);
+    setTransactions([]);
+    setPushBankId('');
+    setCloseMonth('');
+    setCloseYear('');
+    setReturnFromPush(false);
+    setError('');
+
+    try {
+      const lr = await apiFetch(`/learn/${nextTenant.tenant_id}`);
+      const ld = await lr.json();
+      if (ld.learned) {
+        setProfile(ld.profile);
+        setBankAccounts(ld.bankAccounts || []);
+        setLearnedAt(ld.learnedAt);
+      }
+      setStep(1);
+    } finally {
+      setSwitchingTenant(false);
+    }
+  }
+
   async function loadTenants() {
     try {
       const r = await apiFetch('/auth/tenants');
-      const tenants = await r.json();
-      if (tenants.length) {
-        setTenant(tenants[0]);
-        // Always start at step 1 (Learn) — load any cached profile in the
-        // background so the Learn step can show "already learned" info,
-        // but never auto-jump past it.
-        const lr = await apiFetch(`/learn/${tenants[0].tenant_id}`);
-        const ld = await lr.json();
-        if (ld.learned) {
-          setProfile(ld.profile);
-          setBankAccounts(ld.bankAccounts || []);
-          setLearnedAt(ld.learnedAt);
-        }
-        setStep(1); // always start at Learn step
+      const tenantRows = await r.json();
+      setTenants(tenantRows);
+      if (tenantRows.length) {
+        await loadTenantContext(tenantRows[0]);
       }
     } catch (e) { /* not yet connected */ }
+  }
+
+  async function handleTenantChange(event) {
+    const nextTenant = tenants.find(t => t.tenant_id === event.target.value);
+    if (!nextTenant || nextTenant.tenant_id === tenant?.tenant_id) return;
+
+    try {
+      await loadTenantContext(nextTenant);
+    } catch (e) {
+      setError(getUserFacingErrorMessage(e));
+    }
   }
 
   async function connectXero() {
@@ -194,7 +261,7 @@ export default function App() {
   async function disconnect() {
     if (!tenant) return;
     await apiFetch(`/auth/disconnect/${tenant.tenant_id}`, { method: 'DELETE' });
-    setTenant(null); setProfile(null); setStep(0);
+    setTenants([]); setTenant(null); setProfile(null); setStep(0);
     setSession(null); setTransactions([]); setChecklist([]);
   }
 
@@ -210,21 +277,68 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {tenant && (
-            <span style={{ ...S.pill, ...S.pillGreen, fontSize: 13 }}>
-              ✓ {tenant.tenant_name}
-            </span>
-          )}
-          {tenant && (
-            <button className="btn-danger" style={{ ...S.btn, ...S.btnDanger, padding: '6px 14px', fontSize: 12 }} onClick={disconnect}>
-              Disconnect
-            </button>
-          )}
+  <button
+    onClick={disconnect}
+    style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      padding: '8px 14px',
+      fontSize: 12,
+      fontWeight: 700,
+      lineHeight: 1,
+      color: '#dc2626',
+      background: 'linear-gradient(180deg, #ffffff 0%, #fff7f7 100%)',
+      border: '1px solid #fecaca',
+      borderRadius: 10,
+      boxShadow: '0 6px 14px rgba(220, 38, 38, 0.08)',
+      cursor: 'pointer',
+      transition: 'all 0.18s ease',
+    }}
+    onMouseEnter={(e) => {
+      e.currentTarget.style.background = 'linear-gradient(180deg, #fef2f2 0%, #fee2e2 100%)';
+      e.currentTarget.style.borderColor = '#fca5a5';
+      e.currentTarget.style.transform = 'translateY(-1px)';
+      e.currentTarget.style.boxShadow = '0 10px 20px rgba(220, 38, 38, 0.14)';
+    }}
+    onMouseLeave={(e) => {
+      e.currentTarget.style.background = 'linear-gradient(180deg, #ffffff 0%, #fff7f7 100%)';
+      e.currentTarget.style.borderColor = '#fecaca';
+      e.currentTarget.style.transform = 'translateY(0)';
+      e.currentTarget.style.boxShadow = '0 6px 14px rgba(220, 38, 38, 0.08)';
+    }}
+  >
+    <span style={{ fontSize: 13 }}>⛔</span>
+    Disconnect
+  </button>
+)}
         </div>
       </header>
 
       <main style={S.main} className="main-pad">
         {error && (
           <div style={{ ...S.alert, ...S.alertRed }} className="fade-in">⚠ {error}</div>
+        )}
+
+        {tenant && (
+          <div className="tenant-bar fade-in">
+            <div className="tenant-bar-badge">
+              <span className="tenant-bar-dot" />
+              Connected to Xero
+            </div>
+            <TenantSwitcher
+              tenants={tenants}
+              tenantId={tenant.tenant_id}
+              onChange={handleTenantChange}
+              disabled={switchingTenant}
+            />
+            {switchingTenant && (
+              <div className="tenant-bar-status">
+                <Spinner size={14} color="#1d4ed8" /> Switching organisation…
+              </div>
+            )}
+          </div>
         )}
 
         {/* ─── Step Progress Bar ─── */}
