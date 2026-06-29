@@ -3488,6 +3488,7 @@ function TxnRow({ txn, expanded, accounts, onToggle, onUpdate, onAttach, onRemov
 // ─── Step 4: Push ─────────────────────────────────────────────────────────────
 function PushStep({ session, transactions, bankAccounts, initialBankId, onDone }) {
   const initBank = bankAccounts.find(b => (b.AccountID || b.account_code) === initialBankId) || null;
+  const sessionId = session?.id || session?.sessionId || '';
   const [bankAccountId,   setBankAccountId]   = useState(initialBankId || '');
   const [bankAccountName, setBankAccountName] = useState(initBank?.Name || '');
   const [results,   setResults]   = useState(null);
@@ -3503,7 +3504,8 @@ function PushStep({ session, transactions, bankAccounts, initialBankId, onDone }
     setPushing(true); setError(''); setPushProgress(0);
     const interval = setInterval(() => setPushProgress(p => Math.min(p + Math.random() * 12, 90)), 800);
     try {
-      const r = await apiFetch(`/close/session/${session}/push`, {
+      if (!sessionId) throw new Error('Session not found. Please go back and create the close session again.');
+      const r = await apiFetch(`/close/session/${sessionId}/push`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ bankAccountId, bankAccountName })
       });
