@@ -527,7 +527,7 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
       <div style={{ marginBottom: 20, border: '1px solid #f3f4f6', borderRadius: 10, overflow: 'hidden' }}>
         {[
           ['📊', 'Chart of accounts', 'To understand your account structure'],
-          ['💳', 'Last 6 months of bank transactions', 'To learn income & expense patterns'],
+          ['💳', `Last ${months} months of bank transactions`, 'To learn transaction patterns'],
           ['📄', 'Bills and invoices', 'To understand your supplier & customer base'],
           ['📓', 'Manual journals', 'To identify recurring accruals and adjustments'],
         ].map(([icon, title, sub], i, arr) => (
