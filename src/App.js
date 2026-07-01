@@ -109,6 +109,33 @@ const CAT_COLORS = {
   other: S.pillGray
 };
 
+const CHECKLIST_SECTIONS = [
+  { id: 'bank_reconciliation', label: 'Bank statement upload & Reconciliation' },
+  { id: 'ar_invoices', label: 'AR & Invoices review, create and Reconciliation' },
+  { id: 'bills_review', label: 'Bills Review create Reconciliation' },
+  { id: 'fixed_assets', label: 'Fixed Assets Reconciliation' },
+  { id: 'manual_journals', label: 'Manual journal Adjustment' },
+  { id: 'other_adjustments', label: 'Other Adjustment (optional)' },
+];
+
+function getChecklistSection(item) {
+  if (item?.section) return item.section;
+  const category = item?.category;
+  if (category === 'bank_upload' || category === 'duplicates' || category === 'reconcile') return 'bank_reconciliation';
+  if (category === 'receivables') return 'ar_invoices';
+  if (category === 'recurring_bills' || category === 'approve_bills' || category === 'payables') return 'bills_review';
+  if (category === 'depreciation') return 'fixed_assets';
+  if (category === 'accruals' || category === 'journals') return 'manual_journals';
+  return 'other_adjustments';
+}
+
+function groupChecklistItems(items = []) {
+  return CHECKLIST_SECTIONS.map(section => ({
+    ...section,
+    items: items.filter(item => getChecklistSection(item) === section.id)
+  }));
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function Spinner({ size = 20, color = '#6366f1' }) {
   return (
@@ -177,13 +204,25 @@ export default function App() {
   const [checklist, setChecklist]     = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [pushBankId, setPushBankId]   = useState('');
-  // Flag passed to ReviewStep when returning from PushStep (step 4 → 3).
+  // Flag passed to ReviewStep when returning from PushStep (step 5 → 4).
   // ReviewStep reads this on mount (via ref) to restore checklist tab + banner.
   const [returnFromPush, setReturnFromPush] = useState(false);
   const [error, setError]             = useState('');
   const [loading, setLoading]         = useState(false);
   const [learnedAt, setLearnedAt]     = useState(null);
   const [switchingTenant, setSwitchingTenant] = useState(false);
+
+  async function loadSessionState(sessionId) {
+    if (!sessionId) return;
+    const r = await apiFetch(`/close/session/${sessionId}`);
+    const data = await r.json();
+    if (!r.ok) throw new Error(getUserFacingErrorMessage(data?.error));
+    setSession(data.session);
+    setChecklist(data.session?.checklistState || []);
+    setTransactions(data.transactions || []);
+    setCloseMonth(data.session?.month || '');
+    setCloseYear(data.session?.year || '');
+  }
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -265,7 +304,40 @@ export default function App() {
     setSession(null); setTransactions([]); setChecklist([]);
   }
 
-  const stepLabels = ['Connect', 'Learn', 'Setup', 'Review', 'Push', 'Done'];
+  async function goBack() {
+    setError('');
+    try {
+      if (step <= 0) return;
+      if (step === 6) {
+        setStep(5);
+        return;
+      }
+      if (step === 5) {
+        setReturnFromPush(true);
+        setStep(4);
+        return;
+      }
+      if (step === 4) {
+        setStep(3);
+        return;
+      }
+      if (step === 3) {
+        setStep(2);
+        return;
+      }
+      if (step === 2) {
+        setStep(1);
+        return;
+      }
+      if (step === 1) {
+        setStep(0);
+      }
+    } catch (e) {
+      setError(getUserFacingErrorMessage(e));
+    }
+  }
+
+  const stepLabels = ['Connect', 'Learn', 'Setup', 'Bank', 'Review', 'Push', 'Done'];
 
   return (
     <div style={S.page}>
@@ -276,6 +348,29 @@ export default function App() {
           <span style={S.logoText}>Xero Month End Closer</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {step > 0 && (
+            <button
+              onClick={goBack}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                padding: '8px 14px',
+                fontSize: 12,
+                fontWeight: 700,
+                lineHeight: 1,
+                color: '#374151',
+                background: '#fff',
+                border: '1px solid #e5e7eb',
+                borderRadius: 10,
+                boxShadow: '0 4px 12px rgba(15, 23, 42, 0.05)',
+                cursor: 'pointer',
+              }}
+            >
+              ← Back
+            </button>
+          )}
           {tenant && (
   <button
     onClick={disconnect}
@@ -374,10 +469,11 @@ export default function App() {
 
         {step === 0 && <ConnectStep onConnect={connectXero} loading={loading} />}
         {step === 1 && <LearnStep tenant={tenant} cachedProfile={profile} cachedLearnedAt={learnedAt} onLearned={(p, ba, la) => { setProfile(p); setBankAccounts(ba); setLearnedAt(la); setStep(2); }} onProceed={() => setStep(2)} />}
-        {step === 2 && <SetupStep tenant={tenant} profile={profile} learnedAt={learnedAt} onSession={(s, c, m, y) => { setSession(s); setChecklist(c); setCloseMonth(m); setCloseYear(y); setStep(3); }} onRelearn={() => setStep(1)} />}
-        {step === 3 && <ReviewStep session={session} checklist={checklist} profile={profile} bankAccounts={bankAccounts} tenant={tenant} transactions={transactions} setTransactions={setTransactions} closeMonth={closeMonth} closeYear={closeYear} onProceed={(bankId) => { setPushBankId(bankId || ''); setStep(4); }} onComplete={async () => { if (session?.id) { try { await apiFetch(`/close/session/${session.id}/complete`, { method: 'POST' }); } catch {} } setStep(5); }} returnFromPush={returnFromPush} onReturnAck={() => setReturnFromPush(false)} />}
-        {step === 4 && <PushStep session={session} transactions={transactions} bankAccounts={bankAccounts} initialBankId={pushBankId} onDone={() => { setReturnFromPush(true); setStep(3); }} />}
-        {step === 5 && <DoneStep session={session} onNewMonth={() => { setSession(null); setChecklist([]); setTransactions([]); setStep(2); }} />}
+        {step === 2 && <SetupStep tenant={tenant} profile={profile} learnedAt={learnedAt} existingSession={session} existingMonth={closeMonth} existingYear={closeYear} onResumeSession={async () => { await loadSessionState(session?.id); setStep(3); }} onSession={(s, c, m, y) => { setSession(s); setChecklist(c); setCloseMonth(m); setCloseYear(y); setStep(3); }} onRelearn={() => setStep(1)} />}
+        {step === 3 && <BankReconciliationStep session={session} checklist={checklist} bankAccounts={bankAccounts} tenant={tenant} transactions={transactions} setTransactions={setTransactions} onChecklistStateChange={(nextItems) => { setChecklist(nextItems); setSession(prev => prev ? { ...prev, checklistState: nextItems } : prev); }} closeMonth={closeMonth} closeYear={closeYear} onContinue={() => setStep(4)} />}
+        {step === 4 && <ReviewStep session={session} checklist={checklist} profile={profile} bankAccounts={bankAccounts} tenant={tenant} transactions={transactions} setTransactions={setTransactions} onChecklistStateChange={(nextItems) => { setChecklist(nextItems); setSession(prev => prev ? { ...prev, checklistState: nextItems } : prev); }} closeMonth={closeMonth} closeYear={closeYear} onProceed={(bankId) => { setPushBankId(bankId || ''); setStep(5); }} onComplete={async () => { if (session?.id) { try { await apiFetch(`/close/session/${session.id}/complete`, { method: 'POST' }); } catch {} } setStep(6); }} returnFromPush={returnFromPush} onReturnAck={() => setReturnFromPush(false)} />}
+        {step === 5 && <PushStep session={session} transactions={transactions} bankAccounts={bankAccounts} initialBankId={pushBankId} onBankChange={setPushBankId} onDone={() => { setReturnFromPush(true); setStep(4); }} />}
+        {step === 6 && <DoneStep session={session} onNewMonth={() => { setSession(null); setChecklist([]); setTransactions([]); setStep(2); }} />}
       </main>
     </div>
   );
@@ -427,12 +523,11 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
   const [stage, setStage]           = useState(cachedProfile ? 'already_learned' : 'permission');
   const [progressStep, setProgressStep] = useState(0);
   const [error, setError]           = useState('');
-  const [months, setMonths]         = useState(6); // 3 | 6 | 9
 
   const progressSteps = [
     'Connecting to Xero…',
     'Fetching chart of accounts…',
-    `Reading ${months} months of bank transactions…`,
+    'Reading 6 months of bank transactions…',
     'Fetching bills, invoices & journals…',
     'AI is analysing your close patterns…',
     'Finalising org profile…',
@@ -446,8 +541,7 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
     try {
       const r = await apiFetch(`/learn/${tenant.tenant_id}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ months })
+        headers: { 'Content-Type': 'application/json' }
       });
       const data = await r.json();
       clearInterval(stepTimer);
@@ -463,26 +557,6 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
     }
   }
 
-  // Month selector pill group
-  const MonthPicker = () => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ fontSize: 12, color: '#6b7280', fontWeight: 500 }}>Look back:</span>
-      {[3, 6, 9].map(m => (
-        <button key={m}
-          onClick={() => setMonths(m)}
-          style={{
-            ...S.btn, padding: '4px 12px', fontSize: 12, borderRadius: 8,
-            background: months === m ? 'linear-gradient(135deg,#6366f1,#8b5cf6)' : '#f3f4f6',
-            color: months === m ? '#fff' : '#374151',
-            fontWeight: months === m ? 700 : 500,
-            border: 'none', cursor: 'pointer',
-          }}>
-          {m}mo
-        </button>
-      ))}
-    </div>
-  );
-
   if (stage === 'already_learned') return (
     <div style={{ ...S.card, maxWidth: 580, margin: '0 auto' }} className="fade-in">
       <div style={{ fontSize: 38, marginBottom: 14 }}>🧠</div>
@@ -494,17 +568,14 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
           ✓ <strong>{tenant?.tenant_name}</strong> last analysed{' '}
           <strong>{cachedLearnedAt ? new Date(cachedLearnedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' }) : 'previously'}</strong>
         </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <MonthPicker />
-          <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '5px 14px', fontSize: 13 }}
-            onClick={startLearn}>
-            🔄 Re-learn
-          </button>
-        </div>
+        <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '5px 14px', fontSize: 13 }}
+          onClick={startLearn}>
+          🔄 Re-learn
+        </button>
       </div>
 
       <p style={{ ...S.p, fontSize: 14, marginBottom: 20 }}>
-        Your AI profile is up to date. Proceed to set up your close, or re-learn to pick up recent changes.
+        Your AI profile is up to date. The learn step always analyses the latest 6 months of Xero activity.
       </p>
 
       {/* Clickable stat cards with full detail */}
@@ -524,34 +595,29 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
       <p style={{ ...S.p, fontSize: 15, marginBottom: 20 }}>
         To create a personalised close process for <strong>{tenant?.tenant_name}</strong>, we need to read your Xero data.
       </p>
-      <div style={{ marginBottom: 20, border: '1px solid #f3f4f6', borderRadius: 10, overflow: 'hidden' }}>
-        {[
-          ['📊', 'Chart of accounts', 'To understand your account structure'],
-          ['💳', `Last ${months} months of bank transactions`, 'To learn transaction patterns'],
-          ['📄', 'Bills and invoices', 'To understand your supplier & customer base'],
-          ['📓', 'Manual journals', 'To identify recurring accruals and adjustments'],
-        ].map(([icon, title, sub], i, arr) => (
-          <div key={title} style={{ display: 'flex', gap: 14, alignItems: 'center', padding: '12px 16px', background: i % 2 === 0 ? '#fafbff' : '#fff', borderBottom: i < arr.length - 1 ? '1px solid #f3f4f6' : 'none' }}>
-            <span style={{ fontSize: 18, flexShrink: 0 }}>{icon}</span>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: '#1e1b4b' }}>{title}</div>
-              <div style={{ fontSize: 12, color: '#6b7280' }}>{sub}</div>
-            </div>
-            <span style={{ marginLeft: 'auto', color: '#6366f1', fontWeight: 700, fontSize: 14 }}>✓</span>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+        <div style={{ border: '1px solid #dbeafe', background: '#eff6ff', borderRadius: 12, padding: '16px 18px' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#1d4ed8', marginBottom: 8 }}>📆 Uses the latest 6 months of activity</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#475569', lineHeight: 1.65 }}>
+            <div>• Bank transactions from the last 6 months, then the latest <strong>60</strong> are used for learning</div>
+            <div>• Bills from the last 6 months, then the latest <strong>50</strong> are used</div>
+            <div>• Invoices from the last 6 months, then the latest <strong>50</strong> are used</div>
+            <div>• Manual journals from the last 6 months, then the latest <strong>30</strong> are used</div>
+            <div>• Credit notes from the last 6 months, then the latest <strong>30</strong> are used</div>
           </div>
-        ))}
-      </div>
-      <div style={{ ...S.alert, ...S.alertBlue, marginBottom: 20, fontSize: 13 }}>
-        🔒 All data stays on your machine. Nothing is stored in the cloud or shared with third parties.
+        </div>
+        <div style={{ border: '1px solid #e9d5ff', background: '#faf5ff', borderRadius: 12, padding: '16px 18px' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#7c3aed', marginBottom: 8 }}>🕘 Not controlled by the month picker</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: '#475569', lineHeight: 1.65 }}>
+            <div>• Your current chart of accounts is included as-is so we understand how the books are structured today</div>
+            <div>• Current repeating bills and invoices are included, with the latest <strong>20</strong> recurring items used for learning</div>
+            <div>• Your organisation setup is also read so the checklist matches the current Xero file</div>
+          </div>
+        </div>
       </div>
 
-      {/* Look-back period selector */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#f8faff', border: '1px solid #e0e7ff', borderRadius: 10, padding: '12px 16px', marginBottom: 20 }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#1e1b4b' }}>How far back should we look?</div>
-          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>More history = better AI patterns, but takes slightly longer</div>
-        </div>
-        <MonthPicker />
+      <div style={{ ...S.alert, ...S.alertBlue, marginBottom: 20, fontSize: 13 }}>
+        🔒 All data stays on your machine. Nothing is stored in the cloud or shared with third parties.
       </div>
 
       {error && <div style={{ ...S.alert, ...S.alertRed }}>{error}</div>}
@@ -560,7 +626,7 @@ function LearnStep({ tenant, cachedProfile, cachedLearnedAt, onLearned, onProcee
         style={{ ...S.btn, ...S.btnPrimary, width: '100%', justifyContent: 'center', padding: '14px 20px', fontSize: 15 }}
         onClick={startLearn}
       >
-        ✅ I Give Permission — Start Learning ({months} months)
+        ✅ I Give Permission — Start Learning
       </button>
     </div>
   );
@@ -589,53 +655,63 @@ function ProfileStatCards({ profile }) {
   const [open, setOpen] = useState(null);
   const toggle = key => setOpen(prev => prev === key ? null : key);
 
+  const bulletListStyle = { margin: 0, padding: '12px 0 0 18px', color: '#374151' };
+  const bulletItemStyle = { marginBottom: 10, lineHeight: 1.55, fontSize: 13 };
+
   const cards = [
     {
       key: 'suppliers', num: profile.topSuppliers?.length || 0, label: 'Known Suppliers', icon: '🏢', color: '#6366f1', bg: '#f5f3ff',
-      content: (profile.topSuppliers || []).map((s, i) => (
-        <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: '1px solid #f3f4f6', fontSize: 13 }}>
-          <span style={{ color: '#6366f1', fontWeight: 700, flexShrink: 0, width: 20 }}>{i + 1}.</span>
-          <span style={{ color: '#374151' }}>{s}</span>
-        </div>
-      ))
+      content: (profile.topSuppliers || []).length > 0 ? (
+        <ul style={bulletListStyle}>
+          {(profile.topSuppliers || []).map((s, i) => (
+            <li key={i} style={bulletItemStyle}>
+              <strong>Recurring supplier:</strong> {s}
+            </li>
+          ))}
+        </ul>
+      ) : <div style={{ fontSize: 13, color: '#9ca3af', paddingTop: 12 }}>No supplier patterns identified in the current learning set.</div>
     },
     {
       key: 'customers', num: profile.topCustomers?.length || 0, label: 'Known Customers', icon: '👥', color: '#0891b2', bg: '#ecfeff',
       content: (profile.topCustomers || []).length > 0
-        ? (profile.topCustomers || []).map((c, i) => (
-            <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: '1px solid #f3f4f6', fontSize: 13 }}>
-              <span style={{ color: '#0891b2', fontWeight: 700, flexShrink: 0, width: 20 }}>{i + 1}.</span>
-              <span style={{ color: '#374151' }}>{c}</span>
-            </div>
-          ))
-        : [<div key="none" style={{ fontSize: 13, color: '#9ca3af', padding: '8px 0' }}>No customers identified — this org may not have ACCREC invoices in the period.</div>]
+        ? (
+          <ul style={bulletListStyle}>
+            {(profile.topCustomers || []).map((c, i) => (
+              <li key={i} style={bulletItemStyle}>
+                <strong>Active customer:</strong> {c}
+              </li>
+            ))}
+          </ul>
+        )
+        : <div style={{ fontSize: 13, color: '#9ca3af', paddingTop: 12 }}>No customer concentration identified in the current learning set.</div>
     },
     {
       key: 'accounts', num: profile.commonExpenseAccounts?.length || 0, label: 'Expense Accounts', icon: '📒', color: '#7c3aed', bg: '#f5f3ff',
-      content: (profile.commonExpenseAccounts || []).map((a, i) => (
-        <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 0', borderBottom: '1px solid #f3f4f6', fontSize: 13 }}>
-          <span style={{ background: '#ede9fe', color: '#7c3aed', borderRadius: 5, padding: '1px 7px', fontWeight: 700, fontSize: 11, flexShrink: 0 }}>{a.code}</span>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, color: '#1e1b4b' }}>{a.name}</div>
-            {a.typical_payees?.length > 0 && <div style={{ fontSize: 11, color: '#6b7280', marginTop: 1 }}>{a.typical_payees.slice(0, 4).join(' · ')}</div>}
-          </div>
-        </div>
-      ))
+      content: (profile.commonExpenseAccounts || []).length > 0 ? (
+        <ul style={bulletListStyle}>
+          {(profile.commonExpenseAccounts || []).map((a, i) => (
+            <li key={i} style={bulletItemStyle}>
+              <strong>{a.code} - {a.name}</strong>
+              {a.typical_payees?.length > 0 && (
+                <span style={{ color: '#6b7280' }}> · Common payees: {a.typical_payees.slice(0, 4).join(', ')}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : <div style={{ fontSize: 13, color: '#9ca3af', paddingTop: 12 }}>No repeated expense-account patterns identified.</div>
     },
     {
       key: 'tasks', num: profile.regularMonthEndTasks?.length || 0, label: 'Close Tasks', icon: '✅', color: '#059669', bg: '#f0fdf4',
-      content: (profile.regularMonthEndTasks || []).map((t, i) => {
-        const pc = t.priority === 'high' ? { bg: '#fef2f2', text: '#dc2626' } : t.priority === 'medium' ? { bg: '#fefce8', text: '#ca8a04' } : { bg: '#f9fafb', text: '#6b7280' };
-        return (
-          <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 0', borderBottom: '1px solid #f3f4f6', fontSize: 13 }}>
-            <span style={{ background: pc.bg, color: pc.text, borderRadius: 5, padding: '1px 7px', fontSize: 11, fontWeight: 600, flexShrink: 0, marginTop: 1 }}>{t.priority}</span>
-            <div>
-              <div style={{ fontWeight: 600, color: '#1e1b4b' }}>{t.task}</div>
-              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2, lineHeight: 1.5 }}>{t.detail}</div>
-            </div>
-          </div>
-        );
-      })
+      content: (profile.regularMonthEndTasks || []).length > 0 ? (
+        <ul style={bulletListStyle}>
+          {(profile.regularMonthEndTasks || []).map((t, i) => (
+            <li key={i} style={bulletItemStyle}>
+              <strong>{t.task}</strong> <span style={{ color: t.priority === 'high' ? '#dc2626' : t.priority === 'medium' ? '#ca8a04' : '#6b7280' }}>({t.priority} priority)</span>
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>{t.detail}</div>
+            </li>
+          ))}
+        </ul>
+      ) : <div style={{ fontSize: 13, color: '#9ca3af', paddingTop: 12 }}>No recurring close tasks were identified from the learning data.</div>
     }
   ];
 
@@ -676,53 +752,11 @@ function ProfileStatCards({ profile }) {
   );
 }
 
-// ─── Insight Card ─────────────────────────────────────────────────────────────
-function InsightCard({ insights }) {
-  if (!insights) return null;
-  if (typeof insights === 'string') return (
-    <div style={{ ...S.alert, ...S.alertBlue, marginBottom: 20 }}>
-      💡 <strong>AI Insight:</strong> {insights}
-    </div>
-  );
-  const { businessSummary, keyRisks = [], watchItems = [], missingControls = [] } = insights;
-  return (
-    <div style={{ border: '1px solid #c7d2fe', borderRadius: 14, overflow: 'hidden', marginBottom: 24, boxShadow: '0 2px 12px rgba(99,102,241,0.07)' }}>
-      <div style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', padding: '13px 20px', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <span style={{ fontSize: 18 }}>🧠</span>
-        <span style={{ color: '#fff', fontWeight: 700, fontSize: 14 }}>AI Business Insights</span>
-      </div>
-      <div style={{ background: '#fafbff', padding: '14px 20px', borderBottom: '1px solid #e0e7ff' }}>
-        <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.65 }}>{businessSummary}</div>
-      </div>
-      <div className="insight-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', background: '#fff' }}>
-        {[
-          { icon: '⚠️', label: 'Key Risks',       color: '#dc2626', items: keyRisks },
-          { icon: '👁',  label: 'Watch Each Month', color: '#ca8a04', items: watchItems },
-          { icon: '🔧', label: 'Gaps / Controls',  color: '#7c3aed', items: missingControls },
-        ].map((col, ci) => (
-          <div key={ci} style={{ padding: '14px 16px', borderRight: ci < 2 ? '1px solid #f3f4f6' : 'none' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-              <span style={{ fontSize: 13 }}>{col.icon}</span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: col.color, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{col.label}</span>
-            </div>
-            {col.items.map((item, i) => (
-              <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginBottom: 6 }}>
-                <span style={{ color: col.color, fontWeight: 700, fontSize: 11, flexShrink: 0, marginTop: 1 }}>•</span>
-                <span style={{ fontSize: 12, color: '#374151', lineHeight: 1.55 }}>{item}</span>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ─── Step 2: Setup ────────────────────────────────────────────────────────────
-function SetupStep({ tenant, profile, learnedAt, onSession, onRelearn }) {
+function SetupStep({ tenant, profile, learnedAt, existingSession, existingMonth, existingYear, onResumeSession, onSession, onRelearn }) {
   const curMonth = new Date().getMonth();
-  const [month, setMonth] = useState(MONTHS[curMonth === 0 ? 11 : curMonth - 1]);
-  const [year, setYear]   = useState(curMonth === 0 ? new Date().getFullYear() - 1 : new Date().getFullYear());
+  const [month, setMonth] = useState(existingMonth || MONTHS[curMonth === 0 ? 11 : curMonth - 1]);
+  const [year, setYear]   = useState(existingYear || (curMonth === 0 ? new Date().getFullYear() - 1 : new Date().getFullYear()));
   const [loading, setLoading]   = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [error, setError]       = useState('');
@@ -732,6 +766,11 @@ function SetupStep({ tenant, profile, learnedAt, onSession, onRelearn }) {
   const [stepToggles, setStepToggles] = useState({});
 
   const years = [new Date().getFullYear(), new Date().getFullYear() - 1, new Date().getFullYear() - 2];
+
+  useEffect(() => {
+    if (existingMonth) setMonth(existingMonth);
+    if (existingYear) setYear(existingYear);
+  }, [existingMonth, existingYear]);
 
   const genSteps = [
     'Fetching bills & journals for ' + month + ' ' + year + '…',
@@ -781,100 +820,8 @@ function SetupStep({ tenant, profile, learnedAt, onSession, onRelearn }) {
   const enabledCount = checklist.filter(c => stepToggles[c.id] !== false).length;
   const skippedCount = checklist.length - enabledCount;
 
-  // ── Configure view ──
-  if (stage === 'configure') return (
-    <div className="fade-in">
-      <div style={{ ...S.card, paddingBottom: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }}>
-          <div>
-            <h2 style={{ ...S.h2, marginBottom: 4 }}>🗂 Configure Your Close Steps</h2>
-            <p style={{ ...S.p, margin: 0 }}>
-              AI generated <strong>{checklist.length} steps</strong> for <strong>{month} {year}</strong>. Toggle off any you want to skip.
-            </p>
-          </div>
-          <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, fontSize: 13, flexShrink: 0 }} onClick={() => setStage('pick')}>← Back</button>
-        </div>
-
-        {/* AI disclaimer */}
-        <div style={{ ...S.alert, ...S.alertYellow, marginBottom: 16, fontSize: 12 }}>
-          ⚠️ <strong>AI-generated checklist.</strong> Steps and time estimates are based on your Xero data but may not be perfect — please review each step before starting.
-        </div>
-
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span style={{ ...S.pill, ...S.pillGreen }}>{enabledCount} included</span>
-          {skippedCount > 0 && <span style={{ ...S.pill, ...S.pillGray }}>{skippedCount} skipped</span>}
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-            <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '5px 12px', fontSize: 12 }}
-              onClick={() => { const t = {}; checklist.forEach(c => t[c.id] = true); setStepToggles(t); }}>
-              Enable All
-            </button>
-            <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '5px 12px', fontSize: 12 }}
-              onClick={() => { const t = {}; checklist.forEach(c => t[c.id] = false); setStepToggles(t); }}>
-              Skip All
-            </button>
-          </div>
-        </div>
-
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 0, paddingBottom: 8 }}>
-          {checklist.map((item, i) => {
-            const enabled = stepToggles[item.id] !== false;
-            return (
-              <div key={item.id}
-                className={enabled ? 'checklist-item' : ''}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 14, padding: '12px 14px',
-                  border: `1px solid ${enabled ? '#e0e7ff' : '#f3f4f6'}`,
-                  borderRadius: 10,
-                  background: enabled ? '#fafbff' : '#fafafa',
-                  opacity: enabled ? 1 : 0.5,
-                  transition: 'all 0.15s', cursor: 'pointer',
-                }}
-                onClick={() => setStepToggles(prev => ({ ...prev, [item.id]: !enabled }))}>
-                {/* Toggle switch */}
-                <div style={{ width: 44, height: 24, borderRadius: 12, flexShrink: 0, background: enabled ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : '#d1d5db', position: 'relative', transition: 'background 0.2s' }}>
-                  <div style={{ position: 'absolute', top: 3, left: enabled ? 22 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 4px rgba(0,0,0,0.2)' }} />
-                </div>
-                {/* Step number */}
-                <div style={{ width: 24, height: 24, borderRadius: '50%', background: enabled ? '#ede9fe' : '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: enabled ? '#7c3aed' : '#9ca3af', flexShrink: 0 }}>
-                  {i + 1}
-                </div>
-                {/* Content */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: enabled ? '#1e1b4b' : '#9ca3af' }}>
-                      {CAT_ICONS[item.category] || '•'} {item.title}
-                    </span>
-                    <span style={{ ...S.pill, ...(CAT_COLORS[item.category] || S.pillGray), padding: '2px 8px', fontSize: 11 }}>{item.category}</span>
-                    {item.requiresCsvUpload && <span style={{ ...S.pill, ...S.pillBlue, fontSize: 11 }}>📤 CSV</span>}
-                    {item.requiresXeroPush  && <span style={{ ...S.pill, ...S.pillGreen, fontSize: 11 }}>⬆ Xero</span>}
-                  </div>
-                  <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.description}</div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {error && <div style={{ ...S.alert, ...S.alertRed, margin: '16px 0 0' }}>{error}</div>}
-
-        {/* Sticky footer */}
-        <div className="sticky-footer">
-          <button
-            className="btn-green"
-            style={{ ...S.btn, ...S.btnGreen, padding: '13px 28px', fontSize: 15, opacity: enabledCount === 0 ? 0.4 : 1 }}
-            onClick={beginClose}
-            disabled={enabledCount === 0}
-          >
-            Begin {month} {year} Close with {enabledCount} Step{enabledCount !== 1 ? 's' : ''} →
-          </button>
-          {skippedCount > 0 && (
-            <span style={{ fontSize: 13, color: '#9ca3af' }}>{skippedCount} step{skippedCount !== 1 ? 's' : ''} will be skipped</span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+  const showConfigure = stage === 'configure' && checklist.length > 0;
+  const checklistGroups = groupChecklistItems(checklist);
 
   // ── Pick month view ──
   return (
@@ -886,7 +833,16 @@ function SetupStep({ tenant, profile, learnedAt, onSession, onRelearn }) {
           {learnedAt && <span style={{ color: '#9ca3af', fontSize: 13 }}> · Last updated {new Date(learnedAt).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })}</span>}
         </p>
 
-        {profile?.closingInsights && <InsightCard insights={profile.closingInsights} />}
+        {existingSession?.id && (
+          <div style={{ ...S.alert, ...S.alertBlue, marginBottom: 20 }}>
+            You already have an in-progress close session for <strong>{existingMonth} {existingYear}</strong>. Returning to Review will keep your checklist progress, uploaded transactions, approvals, and other saved changes.
+            <div style={{ marginTop: 10 }}>
+              <button className="btn-primary" style={{ ...S.btn, ...S.btnPrimary, padding: '10px 18px', fontSize: 13 }} onClick={onResumeSession}>
+                ↩ Return to Current Review Session
+              </button>
+            </div>
+          </div>
+        )}
 
         <div style={{ marginBottom: 24 }}>
           <div className="grid2-resp" style={{ ...S.grid2, maxWidth: 380 }}>
@@ -938,14 +894,257 @@ function SetupStep({ tenant, profile, learnedAt, onSession, onRelearn }) {
             </button>
           </div>
         )}
+
+        {showConfigure && (
+          <div style={{ marginTop: 24, borderTop: '1px solid #f3f4f6', paddingTop: 24 }} className="fade-in">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18, gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <h2 style={{ ...S.h2, marginBottom: 4 }}>🗂 Configure Your Close Steps</h2>
+                <p style={{ ...S.p, margin: 0 }}>
+                  AI generated <strong>{checklist.length} steps</strong> for <strong>{month} {year}</strong>. Toggle off any you want to skip.
+                </p>
+              </div>
+              <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, fontSize: 13, flexShrink: 0 }} onClick={() => setStage('pick')}>Hide Checklist</button>
+            </div>
+
+            <div style={{ ...S.alert, ...S.alertYellow, marginBottom: 16, fontSize: 12 }}>
+              ⚠️ <strong>AI-generated checklist.</strong> Steps and time estimates are based on your Xero data but may not be perfect — please review each step before starting.
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ ...S.pill, ...S.pillGreen }}>{enabledCount} included</span>
+              {skippedCount > 0 && <span style={{ ...S.pill, ...S.pillGray }}>{skippedCount} skipped</span>}
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+                <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '5px 12px', fontSize: 12 }}
+                  onClick={() => { const t = {}; checklist.forEach(c => t[c.id] = true); setStepToggles(t); }}>
+                  Enable All
+                </button>
+                <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '5px 12px', fontSize: 12 }}
+                  onClick={() => { const t = {}; checklist.forEach(c => t[c.id] = false); setStepToggles(t); }}>
+                  Skip All
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14, marginBottom: 0, paddingBottom: 8 }}>
+              {checklistGroups.map(group => (
+                <div key={group.id} style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                  <div style={{ background: '#f8faff', padding: '10px 14px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#1e1b4b' }}>{group.label}</span>
+                    <span style={{ ...S.pill, ...S.pillGray, fontSize: 11 }}>{group.items.length} step{group.items.length !== 1 ? 's' : ''}</span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: 10 }}>
+                    {group.items.length === 0 && (
+                      <div style={{ fontSize: 12, color: '#9ca3af', padding: '10px 12px', background: '#fafafa', border: '1px dashed #e5e7eb', borderRadius: 8 }}>
+                        No steps generated for this section in the current checklist.
+                      </div>
+                    )}
+                    {group.items.map(item => {
+                      const enabled = stepToggles[item.id] !== false;
+                      const globalIndex = checklist.indexOf(item);
+                      return (
+                        <div key={item.id}
+                          className={enabled ? 'checklist-item' : ''}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 14, padding: '12px 14px',
+                            border: `1px solid ${enabled ? '#e0e7ff' : '#f3f4f6'}`,
+                            borderRadius: 10,
+                            background: enabled ? '#fafbff' : '#fafafa',
+                            opacity: enabled ? 1 : 0.5,
+                            transition: 'all 0.15s', cursor: 'pointer',
+                          }}
+                          onClick={() => setStepToggles(prev => ({ ...prev, [item.id]: !enabled }))}>
+                          <div style={{ width: 44, height: 24, borderRadius: 12, flexShrink: 0, background: enabled ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : '#d1d5db', position: 'relative', transition: 'background 0.2s' }}>
+                            <div style={{ position: 'absolute', top: 3, left: enabled ? 22 : 3, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 4px rgba(0,0,0,0.2)' }} />
+                          </div>
+                          <div style={{ width: 24, height: 24, borderRadius: '50%', background: enabled ? '#ede9fe' : '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: enabled ? '#7c3aed' : '#9ca3af', flexShrink: 0 }}>
+                            {globalIndex + 1}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 14, fontWeight: 600, color: enabled ? '#1e1b4b' : '#9ca3af' }}>
+                                {CAT_ICONS[item.category] || '•'} {item.title}
+                              </span>
+                              <span style={{ ...S.pill, ...(CAT_COLORS[item.category] || S.pillGray), padding: '2px 8px', fontSize: 11 }}>{item.category}</span>
+                              {item.requiresCsvUpload && <span style={{ ...S.pill, ...S.pillBlue, fontSize: 11 }}>📤 CSV</span>}
+                              {item.requiresXeroPush  && <span style={{ ...S.pill, ...S.pillGreen, fontSize: 11 }}>⬆ Xero</span>}
+                            </div>
+                            <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.description}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="sticky-footer">
+              <button
+                className="btn-green"
+                style={{ ...S.btn, ...S.btnGreen, padding: '13px 28px', fontSize: 15, opacity: enabledCount === 0 ? 0.4 : 1 }}
+                onClick={beginClose}
+                disabled={enabledCount === 0}
+              >
+                Begin {month} {year} Close with {enabledCount} Step{enabledCount !== 1 ? 's' : ''} →
+              </button>
+              {skippedCount > 0 && (
+                <span style={{ fontSize: 13, color: '#9ca3af' }}>{skippedCount} step{skippedCount !== 1 ? 's' : ''} will be skipped</span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// ─── Step 3: Review ───────────────────────────────────────────────────────────
-function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transactions, setTransactions, closeMonth, closeYear, onProceed, onComplete, returnFromPush, onReturnAck }) {
+// ─── Step 3: Bank Reconciliation ──────────────────────────────────────────────
+function BankReconciliationStep({ session, checklist, bankAccounts, tenant, transactions, setTransactions, onChecklistStateChange, closeMonth, closeYear, onContinue }) {
   const sessionId = session?.id || session;
+  const [checkItems, setCheckItems] = useState(() => {
+    if (Array.isArray(session?.checklistState) && session.checklistState.length) return session.checklistState;
+    return checklist.map(c => ({ ...c, done: !!c.done }));
+  });
+  const [uploadingByBank, setUploadingByBank] = useState({});
+  const [uploadError, setUploadError] = useState('');
+  const [stepBankMap, setStepBankMap] = useState({});
+  const [accounts, setAccounts] = useState([]);
+
+  useEffect(() => {
+    if (tenant) apiFetch(`/accounts/${tenant.tenant_id}`).then(r => r.json()).then(setAccounts).catch(() => {});
+  }, [tenant]);
+
+  const bankItems = checkItems.filter(item => getChecklistSection(item) === 'bank_reconciliation');
+  const doneCount = bankItems.filter(item => item.done).length;
+  const activeStepId = bankItems.find(item => !item.done)?.id || null;
+
+  async function persistChecklist(nextItems) {
+    onChecklistStateChange?.(nextItems);
+    if (!sessionId) return;
+    try {
+      await apiFetch(`/close/session/${sessionId}/checklist`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ checklist: nextItems })
+      });
+    } catch {}
+  }
+
+  function toggleItem(i) {
+    setCheckItems(prev => {
+      const next = prev.map((c, j) => j === i ? { ...c, done: !c.done } : c);
+      persistChecklist(next);
+      return next;
+    });
+  }
+
+  async function uploadCsv(file, bankAccountId) {
+    if (!file) return;
+    if (!bankAccountId) { setUploadError('Please select a bank account before uploading.'); return; }
+    setUploadingByBank(prev => ({ ...prev, [bankAccountId]: true })); setUploadError('');
+    const fd = new FormData();
+    fd.append('csv', file);
+    fd.append('bankAccountId', bankAccountId);
+    try {
+      const r = await apiFetch(`/close/session/${sessionId}/upload-csv`, { method: 'POST', body: fd });
+      const data = await r.json();
+      if (!r.ok) throw new Error(getUserFacingErrorMessage(data?.error));
+      setTransactions(prev => {
+        const others = prev.filter(t => t.bank_account_id && t.bank_account_id !== bankAccountId);
+        return [...others, ...data.transactions];
+      });
+    } catch (e) { setUploadError(getUserFacingErrorMessage(e)); }
+    setUploadingByBank(prev => ({ ...prev, [bankAccountId]: false }));
+  }
+
+  async function resolveDuplicate(txnId, action) {
+    const r = await apiFetch(`/close/transaction/${txnId}/resolve-duplicate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(getUserFacingErrorMessage(data?.error));
+    setTransactions(prev => prev.map(t => {
+      if (t.id !== txnId) return t;
+      if (action === 'reject') return { ...t, user_status: 'rejected' };
+      return { ...t, is_duplicate: 0, user_status: 'approved' };
+    }));
+    return data;
+  }
+
+  return (
+    <div className="fade-in">
+      <div style={S.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+          <div>
+            <h2 style={{ ...S.h2, marginBottom: 4 }}>🏦 Bank statement upload & Reconciliation</h2>
+            <p style={{ ...S.p, margin: 0 }}>Complete bank uploads and duplicate checks before moving into the wider close review.</p>
+          </div>
+          <span style={{ ...S.pill, ...(bankItems.length > 0 && doneCount === bankItems.length ? S.pillGreen : S.pillPurple) }}>
+            {doneCount}/{bankItems.length} done
+          </span>
+        </div>
+
+        <ProgressBar pct={bankItems.length ? (doneCount / bankItems.length) * 100 : 0} height={8} />
+
+        <div style={{ marginTop: 18, border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+          <div style={{ background: '#f8faff', padding: '11px 16px', borderBottom: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#1e1b4b' }}>Bank statement upload & Reconciliation</span>
+            <span style={{ ...S.pill, ...S.pillGray, fontSize: 11 }}>{bankItems.length} step{bankItems.length !== 1 ? 's' : ''}</span>
+          </div>
+          <div style={{ padding: 10 }}>
+            {bankItems.length === 0 && (
+              <div style={{ fontSize: 12, color: '#9ca3af', padding: '10px 12px', background: '#fafafa', border: '1px dashed #e5e7eb', borderRadius: 8 }}>
+                No bank reconciliation steps generated for this checklist.
+              </div>
+            )}
+            {bankItems.map(item => {
+              const globalIndex = checkItems.indexOf(item);
+              const itemBank = stepBankMap[item.id] || '';
+              const setItemBank = (val) => {
+                setStepBankMap(prev => ({ ...prev, [item.id]: val }));
+              };
+              return (
+                <ChecklistItem key={item.id} item={item} index={globalIndex}
+                  onToggle={() => toggleItem(globalIndex)}
+                  onUpload={item.requiresCsvUpload ? uploadCsv : null}
+                  uploadingByBank={uploadingByBank}
+                  uploadError={item.requiresCsvUpload ? uploadError : ''}
+                  bankAccounts={bankAccounts}
+                  selectedBank={itemBank}
+                  onSelectBank={setItemBank}
+                  duplicateTransactions={transactions.filter(t => !!t.is_duplicate)}
+                  onResolveDuplicate={resolveDuplicate}
+                  tenant={tenant}
+                  closeMonth={closeMonth}
+                  closeYear={closeYear}
+                  accounts={accounts}
+                  isActive={item.id === activeStepId && !item.done}
+                  transactions={transactions}
+                  setTransactions={setTransactions}
+                  sessionId={session}
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="sticky-footer">
+          <button className="btn-green" style={{ ...S.btn, ...S.btnGreen, padding: '13px 28px', fontSize: 15 }} onClick={onContinue}>
+            Continue to Review Steps →
+          </button>
+          {transactions.length > 0 && <span style={{ fontSize: 13, color: '#9ca3af' }}>{transactions.length} transaction{transactions.length !== 1 ? 's' : ''} loaded</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 4: Review ───────────────────────────────────────────────────────────
+function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transactions, setTransactions, onChecklistStateChange, closeMonth, closeYear, onProceed, onComplete, returnFromPush, onReturnAck }) {
+  const sessionId = session?.id || session;
+  const isReviewItem = item => getChecklistSection(item) !== 'bank_reconciliation';
   const [activeTab, setActiveTab]   = useState('checklist');
   const [checkItems, setCheckItems] = useState(() => {
     if (Array.isArray(session?.checklistState) && session.checklistState.length) return session.checklistState;
@@ -958,7 +1157,7 @@ function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transa
   const [expandedTxn, setExpandedTxn]  = useState(null);
   const [accounts, setAccounts]     = useState([]);
   // activeStepId = the checklist item the user should work on right now
-  const [activeStepId, setActiveStepId] = useState(() => checklist[0]?.id || null);
+  const [activeStepId, setActiveStepId] = useState(() => checklist.find(isReviewItem)?.id || null);
   const [pushJustDone, setPushJustDone] = useState(false);
   const pushCardRef = useRef();
 
@@ -974,7 +1173,7 @@ function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transa
       setActiveTab('checklist');
       setPushJustDone(true);
       setActiveStepId(prev => {
-        const firstUndone = checkItems.find(c => !c.done);
+        const firstUndone = checkItems.find(c => isReviewItem(c) && !c.done);
         return firstUndone?.id || prev;
       });
       onReturnAck();
@@ -983,11 +1182,12 @@ function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transa
 
   // Advance activeStepId to next undone step whenever checkItems changes
   function advanceActiveStep(updatedItems) {
-    const firstUndone = updatedItems.find(c => !c.done);
+    const firstUndone = updatedItems.find(c => isReviewItem(c) && !c.done);
     setActiveStepId(firstUndone?.id || null);
   }
 
   async function persistChecklist(nextItems) {
+    onChecklistStateChange?.(nextItems);
     if (!sessionId) return;
     try {
       await apiFetch(`/close/session/${sessionId}/checklist`, {
@@ -1007,7 +1207,9 @@ function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transa
     });
   }
 
-  const doneCount = checkItems.filter(c => c.done).length;
+  const reviewItems = checkItems.filter(isReviewItem);
+  const doneCount = reviewItems.filter(c => c.done).length;
+  const checkItemGroups = groupChecklistItems(reviewItems).filter(group => group.id !== 'bank_reconciliation');
 
   async function uploadCsv(file, bankAccountId) {
     if (!file) return;
@@ -1082,16 +1284,16 @@ function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transa
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
           <div>
             <h2 style={{ ...S.h2, marginBottom: 4 }}>📋 Month-End Close Checklist</h2>
-            <p style={{ ...S.p, margin: 0 }}>{doneCount} of {checkItems.length} steps complete</p>
+            <p style={{ ...S.p, margin: 0 }}>{doneCount} of {reviewItems.length} review steps complete</p>
           </div>
-          <span style={{ ...S.pill, ...(doneCount === checkItems.length ? S.pillGreen : S.pillPurple) }}>
-            {doneCount === checkItems.length ? '✓ All Done' : `${checkItems.length - doneCount} remaining`}
+          <span style={{ ...S.pill, ...(doneCount === reviewItems.length ? S.pillGreen : S.pillPurple) }}>
+            {doneCount === reviewItems.length ? '✓ All Done' : `${reviewItems.length - doneCount} remaining`}
           </span>
         </div>
 
-        <ProgressBar pct={checkItems.length ? (doneCount / checkItems.length) * 100 : 0} height={8} />
+        <ProgressBar pct={reviewItems.length ? (doneCount / reviewItems.length) * 100 : 0} height={8} />
         <div style={{ marginTop: 4, marginBottom: 20, fontSize: 12, color: '#9ca3af', textAlign: 'right' }}>
-          {Math.round(checkItems.length ? (doneCount / checkItems.length) * 100 : 0)}% complete
+          {Math.round(reviewItems.length ? (doneCount / reviewItems.length) * 100 : 0)}% complete
         </div>
 
         {/* Tabs */}
@@ -1131,62 +1333,59 @@ function ReviewStep({ session, checklist, _profile, bankAccounts, tenant, transa
               ⚠️ <strong>AI-assisted checklist.</strong> Steps are based on your Xero data but AI can make mistakes — please review and verify each item carefully before marking it done.
             </div>
 
-            {/* Main steps (all non-other categories) */}
-            {checkItems.filter(c => c.category !== 'other').map((item, i) => {
-              const globalIndex = checkItems.indexOf(item);
-              const itemBank = stepBankMap[item.id] || '';
-              const setItemBank = (val) => {
-                setStepBankMap(prev => ({ ...prev, [item.id]: val }));
-                setSelectedBank(val);
-              };
-              const isActive = item.id === activeStepId && !item.done;
+            {checkItemGroups.map(group => {
+              const groupDone = group.items.filter(item => item.done).length;
               return (
-                <ChecklistItem key={item.id} item={item} index={i}
-                  onToggle={() => toggleItem(globalIndex)}
-                  onUpload={item.requiresCsvUpload ? uploadCsv : null}
-                  uploadingByBank={uploadingByBank}
-                  uploadError={item.requiresCsvUpload ? uploadError : ''}
-                  bankAccounts={bankAccounts}
-                  selectedBank={itemBank}
-                  onSelectBank={setItemBank}
-                  duplicateTransactions={transactions.filter(t => !!t.is_duplicate)}
-                  onResolveDuplicate={resolveDuplicate}
-                  tenant={tenant}
-                  closeMonth={closeMonth}
-                  closeYear={closeYear}
-                  accounts={accounts}
-                  isActive={isActive}
-                  transactions={transactions}
-                  sessionId={session}
-                />
+                <div key={group.id} style={{ marginBottom: 16, border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                  <div style={{ background: '#f8faff', padding: '11px 16px', borderBottom: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#1e1b4b' }}>{group.label}</span>
+                    <span style={{ ...S.pill, ...(group.items.length > 0 && groupDone === group.items.length ? S.pillGreen : S.pillGray), fontSize: 11 }}>
+                      {group.items.length > 0 ? `${groupDone}/${group.items.length} done` : '0 steps'}
+                    </span>
+                  </div>
+                  <div style={{ padding: 10 }}>
+                    {group.items.length === 0 && (
+                      <div style={{ fontSize: 12, color: '#9ca3af', padding: '10px 12px', background: '#fafafa', border: '1px dashed #e5e7eb', borderRadius: 8 }}>
+                        No steps generated for this section in the current checklist.
+                      </div>
+                    )}
+                    {group.items.map(item => {
+                      const globalIndex = checkItems.indexOf(item);
+                      const itemBank = stepBankMap[item.id] || '';
+                      const setItemBank = (val) => {
+                        setStepBankMap(prev => ({ ...prev, [item.id]: val }));
+                        setSelectedBank(val);
+                      };
+                      const isActive = item.id === activeStepId && !item.done;
+                      return (
+                        <ChecklistItem key={item.id} item={item} index={globalIndex}
+                          onToggle={() => toggleItem(globalIndex)}
+                          onUpload={item.requiresCsvUpload ? uploadCsv : null}
+                          uploadingByBank={uploadingByBank}
+                          uploadError={item.requiresCsvUpload ? uploadError : ''}
+                          bankAccounts={bankAccounts}
+                          selectedBank={itemBank}
+                          onSelectBank={setItemBank}
+                          duplicateTransactions={transactions.filter(t => !!t.is_duplicate)}
+                          onResolveDuplicate={resolveDuplicate}
+                          tenant={tenant}
+                          closeMonth={closeMonth}
+                          closeYear={closeYear}
+                          accounts={accounts}
+                          isActive={isActive}
+                          transactions={transactions}
+                          setTransactions={setTransactions}
+                          sessionId={session}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
               );
             })}
 
-            {/* Others section */}
-            {checkItems.filter(c => c.category === 'other').length > 0 && (
-              <OthersSection
-                items={checkItems.filter(c => c.category === 'other')}
-                checkItems={checkItems}
-                toggleItem={toggleItem}
-                activeStepId={activeStepId}
-                tenant={tenant}
-                closeMonth={closeMonth}
-                closeYear={closeYear}
-                accounts={accounts}
-                transactions={transactions}
-                session={session}
-                bankAccounts={bankAccounts}
-                stepBankMap={stepBankMap}
-                setStepBankMap={setStepBankMap}
-                setSelectedBank={setSelectedBank}
-                uploadCsv={uploadCsv}
-                uploadError={uploadError}
-                resolveDuplicate={resolveDuplicate}
-              />
-            )}
-
             {/* Completion Panel — shown once all steps are done */}
-            {doneCount === checkItems.length && checkItems.length > 0 && (
+            {doneCount === reviewItems.length && reviewItems.length > 0 && (
               <CompletionPanel
                 sessionId={sessionId}
                 tenant={tenant}
@@ -1349,46 +1548,6 @@ function NextActionBar({ transactions, onGoToChecklist, onScrollToPush, onApprov
   );
 }
 
-// ─── Others Section (collapsible, all 'other' category steps) ────────────────
-function OthersSection({ items, checkItems, toggleItem, activeStepId, tenant, closeMonth, closeYear, accounts, transactions, session, bankAccounts, stepBankMap, setStepBankMap, setSelectedBank, _uploadCsv, _uploadError, resolveDuplicate }) {
-  const [open, setOpen] = useState(false);
-  const doneCount = items.filter(c => c.done).length;
-  return (
-    <div style={{ marginTop: 16, border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#f9fafb', cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 14, fontWeight: 700, color: '#374151' }}>🗂 Others ({doneCount}/{items.length} done)</span>
-          <span style={{ fontSize: 12, color: '#9ca3af' }}>Additional org-specific tasks — complete in Xero or mark done</span>
-        </div>
-        <span style={{ color: '#9ca3af', fontSize: 12 }}>{open ? '▲' : '▼'}</span>
-      </div>
-      {open && (
-        <div style={{ padding: '12px 16px', background: '#fff' }} className="fade-in">
-          {items.map(item => {
-            const globalIndex = checkItems.indexOf(item);
-            const isActive = item.id === activeStepId && !item.done;
-            const itemBank = stepBankMap?.[item.id] || '';
-            return (
-              <ChecklistItem key={item.id} item={item} index={globalIndex}
-                onToggle={() => toggleItem(globalIndex)}
-                onUpload={null} uploadingByBank={{}} uploadError=""
-                bankAccounts={bankAccounts}
-                selectedBank={itemBank}
-                onSelectBank={val => { setStepBankMap(p => ({ ...p, [item.id]: val })); setSelectedBank(val); }}
-                duplicateTransactions={transactions.filter(t => !!t.is_duplicate)}
-                onResolveDuplicate={resolveDuplicate}
-                tenant={tenant} closeMonth={closeMonth} closeYear={closeYear}
-                accounts={accounts} isActive={isActive}
-                transactions={transactions} sessionId={session}
-              />
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ─── Shared: Xero report section row helper ───────────────────────────────────
 function parseXeroReport(report) {
   if (!report?.Rows) return [];
@@ -1495,6 +1654,129 @@ function CreateBillPanel({ tenantId, accounts, closeMonth, closeYear }) {
           <button className="btn-green" style={{ ...S.btn, ...S.btnGreen, padding: '9px 22px', fontSize: 14, alignSelf: 'flex-start' }}
             onClick={createBill} disabled={!canPost || submitting}>
             {submitting ? <><Spinner size={15} color="#fff" /> Raising bill…</> : '📤 Raise Bill in Xero'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Create Customer Invoice Panel (for AR creation steps) ───────────────────
+function CreateInvoicePanel({ tenantId, accounts, closeMonth, closeYear }) {
+  const lastDay = closeMonth && closeYear
+    ? new Date(closeYear, new Date(`${closeMonth} 1`).getMonth() + 1, 0).toISOString().split('T')[0]
+    : new Date().toISOString().split('T')[0];
+
+  const [customer, setCustomer] = useState('');
+  const [date, setDate]         = useState(lastDay);
+  const [dueDate, setDueDate]   = useState(lastDay);
+  const [ref, setRef]           = useState('');
+  const [accountCode, setAC]    = useState('');
+  const [amount, setAmount]     = useState('');
+  const [desc, setDesc]         = useState('');
+  const [status, setStatus]     = useState('AUTHORISED');
+  const [submitting, setSub]    = useState(false);
+  const [error, setError]       = useState('');
+  const [posted, setPosted]     = useState([]);
+
+  const activeAccounts = (accounts || []).filter(a => a.Status === 'ACTIVE' && a.Type !== 'BANK');
+  const revenueAccounts = activeAccounts.filter(a =>
+    a.Class === 'REVENUE' ||
+    ['REVENUE', 'SALES', 'OTHERINCOME'].includes(a.Type)
+  );
+  const acctOpts = revenueAccounts.length ? revenueAccounts : activeAccounts;
+  const canPost = customer && amount && date && dueDate && accountCode;
+
+  async function createInvoice() {
+    setSub(true); setError('');
+    try {
+      const r = await apiFetch(`/close/${tenantId}/create-invoice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer,
+          date,
+          dueDate,
+          reference: ref,
+          accountCode,
+          amount: parseFloat(amount),
+          description: desc,
+          status
+        })
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      setPosted(prev => [...prev, { customer, amount, date, dueDate, id: d.invoiceId, number: d.invoiceNumber, status: d.status || status }]);
+      setCustomer(''); setAmount(''); setRef(''); setDesc('');
+    } catch (e) { setError(getUserFacingErrorMessage(e)); }
+    setSub(false);
+  }
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      {posted.map((inv, i) => (
+        <div key={i} style={{ ...S.alert, ...S.alertGreen, marginBottom: 8, fontSize: 13 }} className="fade-in">
+          ✅ Customer invoice created: <strong>{inv.customer}</strong> ${parseFloat(inv.amount).toFixed(2)} on {inv.date}
+          {inv.number && <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 6 }}>#{inv.number}</span>}
+          <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 6 }}>{inv.status}</span>
+        </div>
+      ))}
+      <div style={{ border: '1px solid #a5f3fc', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ background: '#ecfeff', padding: '10px 16px', borderBottom: '1px solid #a5f3fc' }}>
+          <span style={{ fontWeight: 700, fontSize: 13, color: '#0891b2' }}>📥 Create Customer Invoice in Xero</span>
+        </div>
+        <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div className="grid2-resp" style={S.grid2}>
+            <div>
+              <label style={S.label}>Customer / Contact</label>
+              <input style={S.input} placeholder="e.g. ABC Pty Ltd" value={customer} onChange={e => setCustomer(e.target.value)} />
+            </div>
+            <div>
+              <label style={S.label}>Status</label>
+              <select style={S.select} value={status} onChange={e => setStatus(e.target.value)}>
+                <option value="AUTHORISED">Authorised</option>
+                <option value="DRAFT">Draft</option>
+                <option value="SUBMITTED">Submitted for approval</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid2-resp" style={S.grid2}>
+            <div>
+              <label style={S.label}>Invoice Date</label>
+              <input type="date" style={S.input} value={date} onChange={e => setDate(e.target.value)} />
+            </div>
+            <div>
+              <label style={S.label}>Due Date</label>
+              <input type="date" style={S.input} value={dueDate} onChange={e => setDueDate(e.target.value)} />
+            </div>
+          </div>
+          <div className="grid2-resp" style={S.grid2}>
+            <div>
+              <label style={S.label}>Revenue Account</label>
+              <select style={S.select} value={accountCode} onChange={e => setAC(e.target.value)}>
+                <option value="">— Select revenue account —</option>
+                {acctOpts.map(a => <option key={a.AccountID || a.Code} value={a.Code}>{a.Code} — {a.Name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Amount</label>
+              <input type="number" step="0.01" style={S.input} placeholder="0.00" value={amount} onChange={e => setAmount(e.target.value)} />
+            </div>
+          </div>
+          <div className="grid2-resp" style={S.grid2}>
+            <div>
+              <label style={S.label}>Description</label>
+              <input style={S.input} placeholder="Invoice line description" value={desc} onChange={e => setDesc(e.target.value)} />
+            </div>
+            <div>
+              <label style={S.label}>Reference (optional)</label>
+              <input style={S.input} placeholder="PO #, engagement, project, etc." value={ref} onChange={e => setRef(e.target.value)} />
+            </div>
+          </div>
+          {error && <div style={{ ...S.alert, ...S.alertRed, fontSize: 13 }}>{error}</div>}
+          <button className="btn-green" style={{ ...S.btn, ...S.btnGreen, padding: '9px 22px', fontSize: 14, alignSelf: 'flex-start', opacity: canPost ? 1 : 0.5 }}
+            onClick={createInvoice} disabled={!canPost || submitting}>
+            {submitting ? <><Spinner size={15} color="#fff" /> Creating invoice…</> : '📥 Create Invoice in Xero'}
           </button>
         </div>
       </div>
@@ -1663,6 +1945,31 @@ function ReceivablesPanel({ tenantId, month, year }) {
               Mark All Reviewed
             </button>}
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── AR Receipt Reconciliation Panel ─────────────────────────────────────────
+function ARReceiptReconciliationPanel({ tenantId, month, year, transactions }) {
+  const incoming = (transactions || []).filter(t => t.type === 'ACCREC' && t.user_status !== 'rejected');
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      {incoming.length > 0 ? (
+        <>
+          <div style={{ ...S.alert, ...S.alertBlue, fontSize: 13, marginBottom: 12 }}>
+            Match <strong>{incoming.length}</strong> uploaded customer receipt{incoming.length !== 1 ? 's' : ''} against open AR invoices in Xero.
+          </div>
+          <IncomingTxnARMatch txns={incoming} tenantId={tenantId} month={month} year={year} />
+        </>
+      ) : (
+        <>
+          <div style={{ ...S.alert, ...S.alertYellow, fontSize: 13, marginBottom: 12 }}>
+            No uploaded customer receipts are available yet. Upload the bank statement first, then come back here to match incoming receipts to open AR invoices.
+          </div>
+          <ReceivablesPanel tenantId={tenantId} month={month} year={year} />
         </>
       )}
     </div>
@@ -2384,7 +2691,7 @@ function OtherStepPanel({ onToggle }) {
 }
 
 // ─── Bank Upload Step Panel ────────────────────────────────────────────────────
-function BankUploadStepPanel({ item, _sessionId, onUpload, uploading, uploadError, transactions, accounts, _bankAccounts, tenant, closeMonth, closeYear, _onResolveDuplicate }) {
+function BankUploadStepPanel({ item, _sessionId, onUpload, uploading, uploadError, transactions, setTransactions, accounts, _bankAccounts, tenant, closeMonth, closeYear, _onResolveDuplicate }) {
   const [tab, setTab] = useState('upload');
   const fileRef = useRef();
   const bankId = item.bankAccountId;
@@ -2400,14 +2707,26 @@ function BankUploadStepPanel({ item, _sessionId, onUpload, uploading, uploadErro
   // ACCPAY = outgoing (money out / expense); ACCREC = incoming (money in / receipt)
   const outgoing = bankTxns.filter(t => t.type === 'ACCPAY');
   const incoming = bankTxns.filter(t => t.type === 'ACCREC');
+  const unreconciledOutgoing = outgoing.filter(t => t.push_status !== 'pushed');
+  const unreconciledIncoming = incoming.filter(t => t.push_status !== 'pushed');
+
+  function markTxnReconciled(txnId, patch = {}) {
+    setTransactions?.(prev => prev.map(t => t.id === txnId ? {
+      ...t,
+      user_status: 'approved',
+      push_status: 'pushed',
+      push_error: null,
+      ...patch
+    } : t));
+  }
 
   const hasUploaded = bankTxns.length > 0;
 
   const tabs = [
     { id: 'upload', label: '① Upload Statement' },
-    ...(hasUploaded && outgoing.length > 0 ? [{ id: 'bills', label: `② Bills (${outgoing.length} outgoing)` }] : []),
-    ...(hasUploaded && incoming.length > 0 ? [{ id: 'ar',    label: `③ Match Receipts → AR (${incoming.length})` }] : []),
-    ...(hasUploaded && tid ? [{ id: 'ap', label: '④ Payments → Bills' }] : []),
+    ...(hasUploaded && outgoing.length > 0 ? [{ id: 'bills', label: `② Reconciled spents (${outgoing.length})` }] : []),
+    ...(hasUploaded && incoming.length > 0 ? [{ id: 'ar',    label: `③ Reconciled receipts (${incoming.length})` }] : []),
+    ...(hasUploaded && tid ? [{ id: 'ap', label: '④ Unreconciled spents' }] : []),
   ];
 
   return (
@@ -2444,8 +2763,8 @@ function BankUploadStepPanel({ item, _sessionId, onUpload, uploading, uploadErro
           {hasUploaded && (
             <div style={{ ...S.alert, ...S.alertGreen, marginTop: 10, fontSize: 13 }}>
               ✅ {bankTxns.length} transactions loaded.
-              {outgoing.length > 0 && <span> <strong>{outgoing.length} outgoing</strong> — use the Bills tab to create &amp; push bills to Xero.</span>}
-              {incoming.length > 0 && <span> <strong>{incoming.length} incoming</strong> — use the Match Receipts tab to reconcile against open AR.</span>}
+              {outgoing.length > 0 && <span> <strong>{outgoing.length} outgoing</strong> — use Reconciled spents to create &amp; push bills to Xero.</span>}
+              {incoming.length > 0 && <span> <strong>{incoming.length} incoming</strong> — use Reconciled receipts to match against open AR.</span>}
             </div>
           )}
           <div style={{ marginTop: 14, background: '#f8faff', border: '1px solid #e0e7ff', borderRadius: 8, padding: '10px 14px' }}>
@@ -2459,7 +2778,7 @@ function BankUploadStepPanel({ item, _sessionId, onUpload, uploading, uploadErro
 
       {/* ② Create bills from outgoing transactions */}
       {tab === 'bills' && (
-        <OutgoingBillsTab outgoing={outgoing} tenantId={tid} accounts={accounts} />
+        <OutgoingBillsTab outgoing={outgoing} tenantId={tid} accounts={accounts} onTxnReconciled={markTxnReconciled} />
       )}
 
       {/* ③ Match incoming receipts to AR invoices */}
@@ -2468,19 +2787,116 @@ function BankUploadStepPanel({ item, _sessionId, onUpload, uploading, uploadErro
           <div style={{ ...S.alert, ...S.alertBlue, fontSize: 12, marginBottom: 10 }}>
             <strong>{incoming.length} incoming receipts</strong> from <strong>{bankName}</strong>. Match each one to an open AR invoice below to mark it as paid in Xero.
           </div>
-          <IncomingTxnARMatch txns={incoming} tenantId={tid} month={closeMonth} year={closeYear} />
+          <IncomingTxnARMatch txns={incoming} tenantId={tid} month={closeMonth} year={closeYear} onTxnMatched={markTxnReconciled} />
         </div>
       )}
 
-      {/* ④ Match payments to AP bills */}
+      {/* ④ Review unreconciled spends, receipts, and AP bills */}
       {tab === 'ap' && tid && (
-        <div>
-          <div style={{ ...S.alert, ...S.alertBlue, fontSize: 12, marginBottom: 10 }}>
-            Review outstanding AP bills for <strong>{closeMonth} {closeYear}</strong>. Match each bank payment to an open bill, then tick it off below.
-          </div>
-          <PayablesPanel tenantId={tid} month={closeMonth} year={closeYear} />
-        </div>
+        <UnreconciledSpendsPanel
+          outgoing={outgoing}
+          incoming={incoming}
+          unreconciledOutgoing={unreconciledOutgoing}
+          unreconciledIncoming={unreconciledIncoming}
+          tenantId={tid}
+          accounts={accounts}
+          closeMonth={closeMonth}
+          closeYear={closeYear}
+          bankName={bankName}
+          onEditSpents={() => setTab('bills')}
+          onEditReceipts={() => setTab('ar')}
+        />
       )}
+    </div>
+  );
+}
+
+function UnreconciledSpendsPanel({ outgoing, incoming, unreconciledOutgoing, unreconciledIncoming, tenantId, closeMonth, closeYear, bankName, onEditSpents, onEditReceipts }) {
+  const reconciledOutgoing = outgoing.length - unreconciledOutgoing.length;
+  const reconciledIncoming = incoming.length - unreconciledIncoming.length;
+
+  function TxnSummaryRow({ txn }) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderBottom: '1px solid #f3f4f6', fontSize: 13 }}>
+        <span style={{ fontSize: 12, color: '#9ca3af', width: 84, flexShrink: 0 }}>{txn.date}</span>
+        <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600, color: '#1e1b4b' }}>
+          {txn.payee || txn.description}
+        </span>
+        <span style={{ fontSize: 12, color: '#6b7280', width: 130, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {txn.ai_account_name || txn.user_account_name || 'Unmapped'}
+        </span>
+        <span style={{ fontWeight: 700, color: txn.type === 'ACCREC' ? '#16a34a' : '#dc2626', width: 82, textAlign: 'right', flexShrink: 0 }}>
+          {txn.type === 'ACCREC' ? '+' : '-'}${Number(txn.amount || 0).toFixed(2)}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ ...S.alert, ...S.alertBlue, fontSize: 12, marginBottom: 0 }}>
+        Only items still pending after the Reconciled spents and Reconciled receipts tabs appear here.
+        <span> {reconciledOutgoing} spend{reconciledOutgoing !== 1 ? 's' : ''} and {reconciledIncoming} receipt{reconciledIncoming !== 1 ? 's' : ''} already reconciled for <strong>{bankName}</strong>.</span>
+      </div>
+
+      <div style={{ border: '1px solid #e0e7ff', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ background: '#f5f3ff', padding: '10px 16px', borderBottom: '1px solid #e0e7ff', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 700, fontSize: 13, color: '#7c3aed' }}>Unreconciled spents from uploaded statement</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {unreconciledOutgoing.length > 0 && (
+              <button
+                className="btn-secondary"
+                style={{ ...S.btn, ...S.btnSecondary, padding: '5px 12px', fontSize: 11 }}
+                onClick={onEditSpents}
+              >
+                Edit to reconcile
+              </button>
+            )}
+            <span style={{ ...S.pill, ...(unreconciledOutgoing.length ? S.pillRed : S.pillGreen), fontSize: 11 }}>{unreconciledOutgoing.length} pending</span>
+          </div>
+        </div>
+        <div>
+          {unreconciledOutgoing.length > 0 ? (
+            unreconciledOutgoing.map(txn => <TxnSummaryRow key={txn.id} txn={txn} />)
+          ) : (
+            <div style={{ fontSize: 13, color: '#16a34a', padding: '12px 14px' }}>All uploaded spends are reconciled.</div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ border: '1px solid #a5f3fc', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ background: '#ecfeff', padding: '10px 16px', borderBottom: '1px solid #a5f3fc', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontWeight: 700, fontSize: 13, color: '#0891b2' }}>Unreconciled receipts from uploaded statement</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {unreconciledIncoming.length > 0 && (
+              <button
+                className="btn-secondary"
+                style={{ ...S.btn, ...S.btnSecondary, padding: '5px 12px', fontSize: 11 }}
+                onClick={onEditReceipts}
+              >
+                Edit to reconcile
+              </button>
+            )}
+            <span style={{ ...S.pill, ...(unreconciledIncoming.length ? S.pillYellow : S.pillGreen), fontSize: 11 }}>{unreconciledIncoming.length} pending</span>
+          </div>
+        </div>
+        <div>
+          {unreconciledIncoming.length > 0 ? (
+            unreconciledIncoming.map(txn => <TxnSummaryRow key={txn.id} txn={txn} />)
+          ) : (
+            <div style={{ fontSize: 13, color: '#16a34a', padding: '12px 14px' }}>All uploaded receipts are reconciled.</div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ background: '#f8faff', padding: '10px 16px', borderBottom: '1px solid #e5e7eb' }}>
+          <span style={{ fontWeight: 700, fontSize: 13, color: '#1e1b4b' }}>Existing AP bills to review</span>
+        </div>
+        <div style={{ padding: '0 14px 14px' }}>
+          <PayablesPanel tenantId={tenantId} month={closeMonth} year={closeYear} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -2488,7 +2904,7 @@ function BankUploadStepPanel({ item, _sessionId, onUpload, uploading, uploadErro
 // ─── Outgoing Txn → Create Bill Row ───────────────────────────────────────────
 const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, tenantId, accounts, confirmed, onConfirmChange, onPushed }, fwdRef) {
   const [expanded, setExpanded] = useState(false);
-  const [invoiceId, setInvoiceId] = useState(null); // set after push
+  const [invoiceId, setInvoiceId] = useState(txn.push_status === 'pushed' ? (txn.xero_bill_id || 'pushed') : null); // set after push
   const [err, setErr] = useState('');
   const [attachFile, setAttachFile] = useState(null);
   const [_attachUploading, setAttachUploading] = useState(false); // TODO: show spinner in JSX
@@ -2518,6 +2934,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          txnId: txn.id,
           contact: { name: contact }, date, dueDate: date,
           lineItems: [{ description: description || contact, quantity: 1, unitAmount: parseFloat(amt), accountCode }],
           reference: ref, status: 'AUTHORISED'
@@ -2535,7 +2952,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
         await apiFetch(`/close/${tenantId}/bills/${newInvoiceId}/attachment`, { method: 'POST', body: fd }).catch(() => {});
         setAttachUploading(false);
       }
-      onPushed(txn.id);
+      onPushed(txn.id, { xero_bill_id: newInvoiceId });
       return true;
     } catch (e) { setErr(getUserFacingErrorMessage(e)); return false; }
   }
@@ -2632,7 +3049,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
 });
 
 // ─── Bills Tab: list with "Push All Confirmed" ─────────────────────────────────
-function OutgoingBillsTab({ outgoing, tenantId, accounts }) {
+function OutgoingBillsTab({ outgoing, tenantId, accounts, onTxnReconciled }) {
   const [confirmed, setConfirmed] = useState(() => {
     // Auto-confirm rows where AI has high confidence
     const init = {};
@@ -2644,14 +3061,15 @@ function OutgoingBillsTab({ outgoing, tenantId, accounts }) {
   const [pushErr, setPushErr] = useState('');
   const rowRefs = useRef({});
 
-  const confirmedCount = outgoing.filter(t => confirmed[t.id] && !pushed[t.id]).length;
-  const pushedCount = Object.values(pushed).filter(Boolean).length;
+  const isPushed = txn => pushed[txn.id] || txn.push_status === 'pushed';
+  const confirmedCount = outgoing.filter(t => confirmed[t.id] && !isPushed(t)).length;
+  const pushedCount = outgoing.filter(isPushed).length;
 
   async function pushAll() {
     setPushing(true); setPushErr('');
     let failed = 0;
     for (const txn of outgoing) {
-      if (!confirmed[txn.id] || pushed[txn.id]) continue;
+      if (!confirmed[txn.id] || isPushed(txn)) continue;
       const rowEl = rowRefs.current[txn.id];
       if (rowEl?.pushBill) {
         const ok = await rowEl.pushBill();
@@ -2668,7 +3086,7 @@ function OutgoingBillsTab({ outgoing, tenantId, accounts }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
         <div style={{ fontSize: 13, color: '#374151' }}>
           <strong>{confirmedCount}</strong> confirmed · <strong>{pushedCount}</strong> pushed to Xero
-          <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 8 }}>Tick the checkbox on each row to confirm, then push all at once.</span>
+          <span style={{ fontSize: 12, color: '#9ca3af', marginLeft: 8 }}>AI high-confidence rows are auto-selected. Review, adjust if needed, then push all at once.</span>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '6px 14px', fontSize: 12 }}
@@ -2694,7 +3112,10 @@ function OutgoingBillsTab({ outgoing, tenantId, accounts }) {
             accounts={accounts}
             confirmed={!!confirmed[txn.id]}
             onConfirmChange={v => setConfirmed(prev => ({ ...prev, [txn.id]: v }))}
-            onPushed={id => setPushed(prev => ({ ...prev, [id]: true }))}
+            onPushed={(id, patch) => {
+              setPushed(prev => ({ ...prev, [id]: true }));
+              onTxnReconciled?.(id, patch);
+            }}
           />
         ))}
       </div>
@@ -2703,16 +3124,20 @@ function OutgoingBillsTab({ outgoing, tenantId, accounts }) {
 }
 
 // ─── Incoming Txn → AR Match ───────────────────────────────────────────────────
-function IncomingTxnARMatch({ txns, tenantId, month, year }) {
+function IncomingTxnARMatch({ txns, tenantId, month, year, onTxnMatched }) {
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState('');
-  // pendingMatch: txnId → invoiceId (selected but not yet confirmed)
+  // pendingMatch: txnId → invoiceId[] (selected but not yet confirmed)
   const [pendingMatch, setPendingMatch] = useState({});
   // confirmed: txnId → { invoiceId, invoiceLabel }
   const [confirmed, setConfirmed] = useState({});
   // matched (pushed to Xero): txnId → true
-  const [matched, setMatched] = useState({});
+  const [matched, setMatched] = useState(() => {
+    const init = {};
+    txns.forEach(t => { if (t.push_status === 'pushed') init[t.id] = true; });
+    return init;
+  });
   const [matchingId, setMatchingId] = useState(null);
   const [matchErr, setMatchErr] = useState({});
 
@@ -2737,7 +3162,7 @@ function IncomingTxnARMatch({ txns, tenantId, month, year }) {
             ) || invs.find(inv =>
               Math.abs(parseFloat(inv.AmountDue) - amt) < 0.02
             );
-            if (best) next[txn.id] = best.InvoiceID;
+            if (best) next[txn.id] = [best.InvoiceID];
           });
           return next;
         });
@@ -2746,25 +3171,30 @@ function IncomingTxnARMatch({ txns, tenantId, month, year }) {
       .finally(() => setLoading(false));
   }, [tenantId, month, year]);
 
-  async function confirmMatch(txnId) {
-    const invoiceId = pendingMatch[txnId];
-    if (!invoiceId) return;
+  async function confirmMatch(txnId, invoiceIdsOverride = null) {
+    const selectedInvoiceIds = invoiceIdsOverride || pendingMatch[txnId] || [];
+    const invoiceIdList = Array.isArray(selectedInvoiceIds) ? selectedInvoiceIds : [selectedInvoiceIds].filter(Boolean);
+    if (!invoiceIdList.length) return;
     setMatchingId(txnId);
     setMatchErr(prev => ({ ...prev, [txnId]: null }));
     try {
+      const txn = txns.find(t => t.id === txnId);
       const r = await apiFetch(`/close/${tenantId}/match-receipt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ txnId, invoiceId })
+        body: JSON.stringify({ txnId, invoiceIds: invoiceIdList, amount: txn?.amount })
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed');
-      const inv = invoices.find(i => i.InvoiceID === invoiceId);
+      const selectedInvoices = invoiceIdList.map(id => invoices.find(i => i.InvoiceID === id)).filter(Boolean);
       setConfirmed(prev => ({ ...prev, [txnId]: {
-        invoiceId,
-        label: inv ? `${inv.Contact?.Name} — $${parseFloat(inv.AmountDue).toFixed(2)} (${inv.InvoiceNumber || invoiceId.slice(0,8)})` : invoiceId
+        invoiceIds: invoiceIdList,
+        label: selectedInvoices.length
+          ? selectedInvoices.map(inv => `${inv.Contact?.Name} — $${parseFloat(inv.AmountDue).toFixed(2)} (${inv.InvoiceNumber || inv.InvoiceID.slice(0,8)})`).join('; ')
+          : invoiceIdList.join(', ')
       }}));
       setMatched(prev => ({ ...prev, [txnId]: true }));
+      onTxnMatched?.(txnId, { xero_payment_id: (d.paymentIds || [d.paymentId]).filter(Boolean).join(',') });
     } catch (e) {
       setMatchErr(prev => ({ ...prev, [txnId]: getUserFacingErrorMessage(e) }));
     }
@@ -2776,6 +3206,15 @@ function IncomingTxnARMatch({ txns, tenantId, month, year }) {
   if (invoices.length === 0) return <div style={{ ...S.alert, ...S.alertGreen, fontSize: 13 }}>✅ No open (uncollected) AR invoices found — nothing to match.</div>;
 
   const matchedCount = Object.values(matched).filter(Boolean).length;
+  const suggestedTxnIds = txns
+    .filter(txn => (pendingMatch[txn.id] || []).length && !matched[txn.id])
+    .map(txn => txn.id);
+
+  async function autoReconcileSuggested() {
+    for (const txnId of suggestedTxnIds) {
+      await confirmMatch(txnId, pendingMatch[txnId]);
+    }
+  }
 
   return (
     <div>
@@ -2785,19 +3224,38 @@ function IncomingTxnARMatch({ txns, tenantId, month, year }) {
         </div>
       )}
       <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 10 }}>
-        Showing <strong>{invoices.length}</strong> open (uncollected) AR invoices. Select the invoice each receipt belongs to and confirm.
+        Showing <strong>{invoices.length}</strong> open (uncollected) AR invoices. Select one or more invoices each receipt belongs to and confirm.
       </div>
+      {suggestedTxnIds.length > 0 && (
+        <div style={{ ...S.alert, ...S.alertBlue, fontSize: 12, marginBottom: 10, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+          <span>AI found <strong>{suggestedTxnIds.length}</strong> suggested receipt match{suggestedTxnIds.length !== 1 ? 'es' : ''} by customer/amount.</span>
+          <button className="btn-primary" style={{ ...S.btn, ...S.btnPrimary, padding: '6px 14px', fontSize: 12 }} onClick={autoReconcileSuggested}>
+            Auto reconcile suggested
+          </button>
+        </div>
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {txns.map((txn, i) => {
           const amt = parseFloat(txn.amount || 0).toFixed(2);
           const contact = txn.payee || txn.contact_name || 'Unknown';
           const date = txn.date ? txn.date.split('T')[0] : '';
           const isMatched = !!matched[txn.id];
-          const selectedInvoiceId = pendingMatch[txn.id] || '';
-          const selectedInvoice = invoices.find(inv => inv.InvoiceID === selectedInvoiceId);
-          const isAutoSuggested = selectedInvoice &&
-            (selectedInvoice.Contact?.Name?.toLowerCase() === contact.toLowerCase() ||
-             Math.abs(parseFloat(selectedInvoice.AmountDue) - parseFloat(amt)) < 0.02);
+          const selectedInvoiceIds = pendingMatch[txn.id] || [];
+          const selectedInvoices = selectedInvoiceIds.map(id => invoices.find(inv => inv.InvoiceID === id)).filter(Boolean);
+          const selectedTotal = selectedInvoices.reduce((sum, inv) => sum + (parseFloat(inv.AmountDue) || 0), 0);
+          const isAutoSuggested = selectedInvoices.some(inv =>
+            inv.Contact?.Name?.toLowerCase() === contact.toLowerCase() ||
+            Math.abs(parseFloat(inv.AmountDue) - parseFloat(amt)) < 0.02
+          );
+          const toggleInvoice = (invoiceId) => {
+            setPendingMatch(prev => {
+              const current = prev[txn.id] || [];
+              const next = current.includes(invoiceId)
+                ? current.filter(id => id !== invoiceId)
+                : [...current, invoiceId];
+              return { ...prev, [txn.id]: next };
+            });
+          };
 
           if (isMatched) {
             return (
@@ -2823,32 +3281,43 @@ function IncomingTxnARMatch({ txns, tenantId, month, year }) {
                 </div>
                 {isAutoSuggested && <span style={{ ...S.pill, ...S.pillYellow, fontSize: 11 }}>🤖 Auto-suggested</span>}
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                <select style={{ ...S.select, flex: 1, minWidth: 200, fontSize: 12 }}
-                  value={selectedInvoiceId}
-                  onChange={e => setPendingMatch(prev => ({ ...prev, [txn.id]: e.target.value }))}>
-                  <option value="">— Select open AR invoice —</option>
+              <div style={{ marginTop: 8, border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+                <div style={{ background: '#f8faff', padding: '7px 10px', fontSize: 12, fontWeight: 700, color: '#374151', display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                  <span>Select one or more open AR invoices</span>
+                  <span style={{ color: selectedTotal > parseFloat(amt) + 0.02 ? '#dc2626' : '#6b7280' }}>
+                    Selected ${selectedTotal.toFixed(2)} / receipt ${amt}
+                  </span>
+                </div>
+                <div style={{ maxHeight: 180, overflowY: 'auto' }}>
                   {invoices.map(inv => {
                     const contactName = inv.Contact?.Name || 'Unknown';
-                    const due = parseFloat(inv.AmountDue || 0).toFixed(2);
+                    const due = parseFloat(inv.AmountDue || 0);
                     const invNum = inv.InvoiceNumber || inv.InvoiceID.slice(0, 8);
                     const dueDate = inv.DueDate ? inv.DueDate.split('T')[0] : '';
+                    const checked = selectedInvoiceIds.includes(inv.InvoiceID);
+                    const suggested = contactName.toLowerCase() === contact.toLowerCase() || Math.abs(due - parseFloat(amt)) < 0.02;
                     return (
-                      <option key={inv.InvoiceID} value={inv.InvoiceID}>
-                        {contactName} — ${due} outstanding · #{invNum}{dueDate ? ` · due ${dueDate}` : ''}
-                      </option>
+                      <label key={inv.InvoiceID} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '8px 10px', borderTop: '1px solid #f3f4f6', cursor: 'pointer', background: checked ? '#f0fdf4' : '#fff' }}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleInvoice(inv.InvoiceID)} style={{ width: 16, height: 16, accentColor: '#6366f1', flexShrink: 0 }} />
+                        <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <strong>{contactName}</strong> — ${due.toFixed(2)} outstanding · #{invNum}{dueDate ? ` · due ${dueDate}` : ''}
+                        </span>
+                        {suggested && <span style={{ ...S.pill, ...S.pillYellow, fontSize: 10, flexShrink: 0 }}>Suggested</span>}
+                      </label>
                     );
                   })}
-                </select>
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                 <button className="btn-primary" style={{ ...S.btn, ...S.btnPrimary, padding: '7px 16px', fontSize: 12,
-                  opacity: !selectedInvoiceId || matchingId === txn.id ? 0.5 : 1 }}
-                  disabled={!selectedInvoiceId || matchingId === txn.id}
+                  opacity: !selectedInvoiceIds.length || matchingId === txn.id ? 0.5 : 1 }}
+                  disabled={!selectedInvoiceIds.length || matchingId === txn.id}
                   onClick={() => confirmMatch(txn.id)}>
-                  {matchingId === txn.id ? <><Spinner size={12} color="#fff" /> Matching…</> : '✓ Confirm Match'}
+                  {matchingId === txn.id ? <><Spinner size={12} color="#fff" /> Matching…</> : `✓ Confirm ${selectedInvoiceIds.length} Match${selectedInvoiceIds.length !== 1 ? 'es' : ''}`}
                 </button>
                 <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '7px 12px', fontSize: 12 }}
-                  onClick={() => setPendingMatch(prev => ({ ...prev, [txn.id]: '' }))}>
-                  Skip
+                  onClick={() => setPendingMatch(prev => ({ ...prev, [txn.id]: [] }))}>
+                  Clear
                 </button>
               </div>
               {matchErr[txn.id] && <div style={{ ...S.alert, ...S.alertRed, fontSize: 12, marginTop: 6 }}>{matchErr[txn.id]}</div>}
@@ -3206,7 +3675,7 @@ function CompletionPanel({ sessionId, tenant, closeMonth, closeYear, _accounts, 
   );
 }
 
-function ChecklistItem({ item, index, onToggle, onUpload, uploadingByBank, uploadError, bankAccounts, selectedBank, onSelectBank, duplicateTransactions, onResolveDuplicate, tenant, closeMonth, closeYear, accounts, isActive, transactions, sessionId }) {
+function ChecklistItem({ item, index, onToggle, onUpload, uploadingByBank, uploadError, bankAccounts, selectedBank, onSelectBank, duplicateTransactions, onResolveDuplicate, tenant, closeMonth, closeYear, accounts, isActive, transactions, setTransactions, sessionId }) {
   const [open, setOpen] = useState(isActive);
   const fileRef = useRef();
 
@@ -3267,6 +3736,7 @@ function ChecklistItem({ item, index, onToggle, onUpload, uploadingByBank, uploa
                 item={item} sessionId={sessionId}
                 onUpload={onUpload} uploading={!!(uploadingByBank || {})[item.bankAccountId]} uploadError={uploadError}
                 transactions={transactions} accounts={accounts}
+                setTransactions={setTransactions}
                 bankAccounts={bankAccounts} tenant={tenant}
                 closeMonth={closeMonth} closeYear={closeYear}
                 onResolveDuplicate={onResolveDuplicate}
@@ -3303,6 +3773,10 @@ function ChecklistItem({ item, index, onToggle, onUpload, uploadingByBank, uploa
               return <JournalEntryPanel tenantId={tid} accounts={accounts} closeMonth={closeMonth} closeYear={closeYear} />;
             if (item.category === 'payables' && tid && !item.requiresCsvUpload)
               return <PayablesPanel tenantId={tid} month={closeMonth} year={closeYear} />;
+            if (item.id === 'invoice_creation' && tid)
+              return <CreateInvoicePanel tenantId={tid} accounts={accounts} closeMonth={closeMonth} closeYear={closeYear} />;
+            if (item.id === 'receipt_reconciliation' && tid)
+              return <ARReceiptReconciliationPanel tenantId={tid} month={closeMonth} year={closeYear} transactions={transactions} />;
             if (item.category === 'receivables' && tid && !item.requiresCsvUpload)
               return <ReceivablesPanel tenantId={tid} month={closeMonth} year={closeYear} />;
 
@@ -3486,7 +3960,7 @@ function TxnRow({ txn, expanded, accounts, onToggle, onUpdate, onAttach, onRemov
 }
 
 // ─── Step 4: Push ─────────────────────────────────────────────────────────────
-function PushStep({ session, transactions, bankAccounts, initialBankId, onDone }) {
+function PushStep({ session, transactions, bankAccounts, initialBankId, onBankChange, onDone }) {
   const initBank = bankAccounts.find(b => (b.AccountID || b.account_code) === initialBankId) || null;
   const sessionId = session?.id || session?.sessionId || '';
   const [bankAccountId,   setBankAccountId]   = useState(initialBankId || '');
@@ -3581,6 +4055,7 @@ function PushStep({ session, transactions, bankAccounts, initialBankId, onDone }
               const b = bankAccounts.find(b => (b.AccountID || b.account_code) === e.target.value);
               setBankAccountId(e.target.value);
               setBankAccountName(b?.Name || b?.name || '');
+              onBankChange?.(e.target.value);
             }}>
               <option value="">— Select bank account —</option>
               {bankAccounts.map(b => {
