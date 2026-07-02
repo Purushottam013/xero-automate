@@ -2778,7 +2778,7 @@ function BankUploadStepPanel({ item, _sessionId, onUpload, uploading, uploadErro
 
       {/* ② Create bills from outgoing transactions */}
       {tab === 'bills' && (
-        <OutgoingBillsTab outgoing={outgoing} tenantId={tid} accounts={accounts} onTxnReconciled={markTxnReconciled} />
+        <OutgoingBillsTab outgoing={outgoing} tenantId={tid} accounts={accounts} bankAccountId={bankId} onTxnReconciled={markTxnReconciled} />
       )}
 
       {/* ③ Match incoming receipts to AR invoices */}
@@ -2902,7 +2902,7 @@ function UnreconciledSpendsPanel({ outgoing, incoming, unreconciledOutgoing, unr
 }
 
 // ─── Outgoing Txn → Create Bill Row ───────────────────────────────────────────
-const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, tenantId, accounts, confirmed, onConfirmChange, onPushed }, fwdRef) {
+const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, tenantId, accounts, bankAccountId, confirmed, onConfirmChange, onPushed }, fwdRef) {
   const [expanded, setExpanded] = useState(false);
   const [invoiceId, setInvoiceId] = useState(txn.push_status === 'pushed' ? (txn.xero_bill_id || 'pushed') : null); // set after push
   const [err, setErr] = useState('');
@@ -2935,6 +2935,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           txnId: txn.id,
+          bankAccountId,
           contact: { name: contact }, date, dueDate: date,
           lineItems: [{ description: description || contact, quantity: 1, unitAmount: parseFloat(amt), accountCode }],
           reference: ref, status: 'AUTHORISED'
@@ -2943,6 +2944,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || 'Failed');
       const newInvoiceId = d.invoiceId;
+      const newPaymentId = d.paymentId;
       setInvoiceId(newInvoiceId);
       // Attach file if selected
       if (attachFile && newInvoiceId) {
@@ -2952,7 +2954,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
         await apiFetch(`/close/${tenantId}/bills/${newInvoiceId}/attachment`, { method: 'POST', body: fd }).catch(() => {});
         setAttachUploading(false);
       }
-      onPushed(txn.id, { xero_bill_id: newInvoiceId });
+      onPushed(txn.id, { xero_bill_id: newInvoiceId, xero_payment_id: newPaymentId });
       return true;
     } catch (e) { setErr(getUserFacingErrorMessage(e)); return false; }
   }
@@ -2966,7 +2968,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
         <span style={{ color: '#16a34a', fontSize: 16 }}>✅</span>
         <span style={{ flex: 1 }}><strong>{contact}</strong><span style={{ color: '#9ca3af', marginLeft: 8 }}>{date}</span></span>
         <span style={{ fontWeight: 700, color: '#dc2626' }}>−${amt}</span>
-        <span style={{ color: '#16a34a', fontSize: 12 }}>Bill created in Xero</span>
+        <span style={{ color: '#16a34a', fontSize: 12 }}>Bill paid and payment marked reconciled in Xero</span>
       </div>
     );
   }
@@ -3049,7 +3051,7 @@ const OutgoingTxnBillRow = React.forwardRef(function OutgoingTxnBillRow({ txn, t
 });
 
 // ─── Bills Tab: list with "Push All Confirmed" ─────────────────────────────────
-function OutgoingBillsTab({ outgoing, tenantId, accounts, onTxnReconciled }) {
+function OutgoingBillsTab({ outgoing, tenantId, accounts, bankAccountId, onTxnReconciled }) {
   const [confirmed, setConfirmed] = useState(() => {
     // Auto-confirm rows where AI has high confidence
     const init = {};
@@ -3114,6 +3116,7 @@ function OutgoingBillsTab({ outgoing, tenantId, accounts, onTxnReconciled }) {
             txn={txn}
             tenantId={tenantId}
             accounts={accounts}
+            bankAccountId={bankAccountId}
             confirmed={!!confirmed[txn.id]}
             onConfirmChange={v => setConfirmed(prev => ({ ...prev, [txn.id]: v }))}
             onPushed={(id, patch) => {
