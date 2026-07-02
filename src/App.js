@@ -3093,6 +3093,10 @@ function OutgoingBillsTab({ outgoing, tenantId, accounts, onTxnReconciled }) {
             onClick={() => { const all = {}; outgoing.forEach(t => { all[t.id] = true; }); setConfirmed(all); }}>
             Select All
           </button>
+          <button className="btn-secondary" style={{ ...S.btn, ...S.btnSecondary, padding: '6px 14px', fontSize: 12 }}
+            onClick={() => { const none = {}; outgoing.forEach(t => { none[t.id] = false; }); setConfirmed(none); }}>
+            Deselect All
+          </button>
           <button className="btn-primary" style={{ ...S.btn, ...S.btnPrimary, padding: '8px 18px', fontSize: 13,
             opacity: confirmedCount === 0 || pushing ? 0.5 : 1 }}
             disabled={confirmedCount === 0 || pushing}
@@ -3138,6 +3142,7 @@ function IncomingTxnARMatch({ txns, tenantId, month, year, onTxnMatched }) {
     txns.forEach(t => { if (t.push_status === 'pushed') init[t.id] = true; });
     return init;
   });
+  const [invoiceSearch, setInvoiceSearch] = useState({});
   const [matchingId, setMatchingId] = useState(null);
   const [matchErr, setMatchErr] = useState({});
 
@@ -3146,7 +3151,7 @@ function IncomingTxnARMatch({ txns, tenantId, month, year, onTxnMatched }) {
     apiFetch(`/close/${tenantId}/open-invoices?month=${month}&year=${year}`)
       .then(r => r.json())
       .then(d => {
-        const invs = d.invoices || [];
+        const invs = (d.invoices || []).filter(inv => !inv.Type || inv.Type === 'ACCREC');
         setInvoices(invs);
         // Auto-suggest: pre-populate pendingMatch for each txn
         setPendingMatch(prev => {
@@ -3243,6 +3248,20 @@ function IncomingTxnARMatch({ txns, tenantId, month, year, onTxnMatched }) {
           const selectedInvoiceIds = pendingMatch[txn.id] || [];
           const selectedInvoices = selectedInvoiceIds.map(id => invoices.find(inv => inv.InvoiceID === id)).filter(Boolean);
           const selectedTotal = selectedInvoices.reduce((sum, inv) => sum + (parseFloat(inv.AmountDue) || 0), 0);
+          const searchTerm = invoiceSearch[txn.id] || '';
+          const search = searchTerm.trim().toLowerCase();
+          const filteredInvoices = search
+            ? invoices.filter(inv => {
+                const due = parseFloat(inv.AmountDue || 0);
+                return [
+                  inv.Contact?.Name,
+                  inv.InvoiceNumber,
+                  inv.Reference,
+                  inv.InvoiceID,
+                  due.toFixed(2)
+                ].filter(Boolean).some(value => String(value).toLowerCase().includes(search));
+              })
+            : invoices;
           const isAutoSuggested = selectedInvoices.some(inv =>
             inv.Contact?.Name?.toLowerCase() === contact.toLowerCase() ||
             Math.abs(parseFloat(inv.AmountDue) - parseFloat(amt)) < 0.02
@@ -3288,8 +3307,21 @@ function IncomingTxnARMatch({ txns, tenantId, month, year, onTxnMatched }) {
                     Selected ${selectedTotal.toFixed(2)} / receipt ${amt}
                   </span>
                 </div>
+                <div style={{ padding: '8px 10px', borderTop: '1px solid #f3f4f6', background: '#fff' }}>
+                  <input
+                    style={{ ...S.input, padding: '7px 10px', fontSize: 12 }}
+                    value={searchTerm}
+                    onChange={e => setInvoiceSearch(prev => ({ ...prev, [txn.id]: e.target.value }))}
+                    placeholder="Search AR invoices by contact, invoice number, reference, or amount"
+                  />
+                </div>
                 <div style={{ maxHeight: 180, overflowY: 'auto' }}>
-                  {invoices.map(inv => {
+                  {filteredInvoices.length === 0 && (
+                    <div style={{ padding: '10px', fontSize: 12, color: '#9ca3af', borderTop: '1px solid #f3f4f6' }}>
+                      No AR invoices match this search.
+                    </div>
+                  )}
+                  {filteredInvoices.map(inv => {
                     const contactName = inv.Contact?.Name || 'Unknown';
                     const due = parseFloat(inv.AmountDue || 0);
                     const invNum = inv.InvoiceNumber || inv.InvoiceID.slice(0, 8);
